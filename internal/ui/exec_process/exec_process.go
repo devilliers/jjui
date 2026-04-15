@@ -15,7 +15,17 @@ import (
 	"github.com/idursun/jjui/internal/ui/context"
 )
 
+// jjBin mirrors the resolution logic in context/command_runner.go.
 var jjBin = func() string {
+	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+		if strings.HasPrefix(dir, "/nix/store/") {
+			continue
+		}
+		candidate := dir + "/jj"
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
 	if path, err := exec.LookPath("jj"); err == nil {
 		return path
 	}

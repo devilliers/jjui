@@ -37,13 +37,17 @@ func extractWorkspaceName(segments []*screen.Segment) string {
 }
 
 // parseRoots parses the output of WorkspaceListRoots into a name→root map.
-// Each line is "name\troot".
+// Each line is "name\troot". Lines where root starts with "<Error:" are skipped.
 func parseRoots(output []byte) map[string]string {
 	roots := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
 		parts := strings.SplitN(line, "\t", 2)
 		if len(parts) == 2 {
-			roots[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			name := strings.TrimSpace(parts[0])
+			root := strings.TrimSpace(parts[1])
+			if name != "" && root != "" && !strings.HasPrefix(root, "<Error:") {
+				roots[name] = root
+			}
 		}
 	}
 	return roots
