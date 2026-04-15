@@ -19,7 +19,8 @@ import (
 )
 
 type updateWorkspaceMsg struct {
-	Rows []row
+	Rows        []row
+	CurrentRoot string
 }
 
 type WorkspaceClickedMsg struct {
@@ -47,6 +48,7 @@ type Model struct {
 	context          *context.MainContext
 	listRenderer     *render.ListRenderer
 	rows             []row
+	currentRoot      string
 	cursor           int
 	textStyle        lipgloss.Style
 	selectedStyle    lipgloss.Style
@@ -102,6 +104,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return cmd
 	case updateWorkspaceMsg:
 		m.rows = msg.Rows
+		m.currentRoot = msg.CurrentRoot
 		return nil
 	case input.SelectedMsg:
 		if m.pendingAdd {
@@ -245,18 +248,23 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 
 	for _, r := range m.rows {
 		if r.Name == name {
-			if r.Root == "" {
-				// jj doesn't have a recorded path for this workspace (common
-				// for the original/default workspace). Prompt the user.
-				m.pendingSwitch = name
+			root := r.Root
+			if root == "" {
+				// jj doesn't have a recorded path for this workspace.
+				// Try to infer it from the other workspaces' recorded paths:
+				// workspaces created in .trees/ sit one level below the main
+				// repo root, so the main repo root is two levels up from any
+				// .trees/<name> path.
+				root = m.inferRepoRoot()
+			}
+			if root == "" {
 				return func() tea.Msg {
-					return common.ShowInputMsg{
-						Title:  fmt.Sprintf("Switch to workspace %q", name),
-						Prompt: "Path: ",
+					return intents.AddMessage{
+						Text: fmt.Sprintf("Workspace %q has no recorded path", name),
+						Err:  fmt.Errorf("no recorded path"),
 					}
 				}
 			}
-			root := r.Root
 			return func() tea.Msg { return SwitchWorkspaceMsg{WorkspaceRoot: root} }
 		}
 	}
@@ -362,7 +370,7 @@ func (m *Model) load() tea.Cmd {
 		}
 
 		rows := parseRows(bytes.NewReader(output), roots, currentRoot)
-		return updateWorkspaceMsg{Rows: rows}
+		return updateWorkspaceMsg{Rows: rows, CurrentRoot: currentRoot}
 	}
 }
 
@@ -376,4 +384,22 @@ func New(context *context.MainContext) *Model {
 	}
 	m.listRenderer = render.NewListRenderer(WorkspaceScrollMsg{})
 	return m
+}
+
+// inferRepoRoot tries to determine the main repo root from recorded workspace
+// paths. Workspaces created in .trees/<name> are two levels below the repo
+// root, so filepath.Dir(filepath.Dir(root)) gives us the repo root.
+// Falls back to currentRoot (works when the current workspace is the main one).
+func (m *Model) inferRepoRoot() string {
+	for _, r := range m.rows {
+		if r.Root == "" {
+			continue
+		}
+		// If the workspace lives in .trees/<name>, go up two levels.
+		parent := filepath.Dir(r.Root)
+		if filepath.Base(parent) == ".trees" {
+			return filepath.Dir(parent)
+		}
+	}
+	return m.currentRoot
 }
