@@ -226,35 +226,26 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 		}
 		name = m.rows[m.cursor].Name
 	}
+	if name == "" {
+		return nil
+	}
 
-	// Use preloaded root if available.
+	// Try preloaded root first (fast path).
 	for _, r := range m.rows {
-		if r.Name == name {
-			if r.Root != "" {
-				root := r.Root
-				return func() tea.Msg {
-					return SwitchWorkspaceMsg{WorkspaceRoot: root}
-				}
-			}
-			// Root was not preloaded — resolve now.
-			break
+		if r.Name == name && r.Root != "" {
+			root := r.Root
+			return func() tea.Msg { return SwitchWorkspaceMsg{WorkspaceRoot: root} }
 		}
 	}
 
-	// Fallback: resolve at switch time via jj workspace root --name.
+	// Resolve via jj workspace root --name (works in jj ≥ 0.38).
 	return func() tea.Msg {
-		if name == "" {
-			return intents.AddMessage{
-				Text: "Cannot switch: workspace name is empty",
-				Err:  fmt.Errorf("empty workspace name"),
-			}
-		}
 		output, err := m.context.RunCommandImmediate(
 			[]string{"workspace", "root", "--name", name},
 		)
 		if err != nil {
 			return intents.AddMessage{
-				Text: fmt.Sprintf("Failed to get workspace root for %q: %v", name, err),
+				Text: fmt.Sprintf("Cannot switch to workspace %q: %v", name, err),
 				Err:  err,
 			}
 		}

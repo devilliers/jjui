@@ -18,9 +18,23 @@ import (
 	"github.com/idursun/jjui/internal/ui/common"
 )
 
-// jjBin is the resolved absolute path to the jj binary, found once at startup.
-// Storing it avoids picking up a different jj from a modified PATH later.
+// jjBin is the resolved absolute path to the jj binary.
+// We prefer the user's profile installation over anything in the nix build
+// environment (which may pin an older version via a devshell).
 var jjBin = func() string {
+	// Walk PATH entries, skipping /nix/store/ paths to avoid picking up
+	// a jj pinned by a nix devshell instead of the user's installed version.
+	pathDirs := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))
+	for _, dir := range pathDirs {
+		if strings.HasPrefix(dir, "/nix/store/") {
+			continue
+		}
+		candidate := dir + "/jj"
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	// Fall back to normal PATH lookup.
 	if path, err := exec.LookPath("jj"); err == nil {
 		return path
 	}
