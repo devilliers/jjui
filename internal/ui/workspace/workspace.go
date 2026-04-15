@@ -230,33 +230,26 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 		return nil
 	}
 
-	// Try preloaded root first (fast path).
 	for _, r := range m.rows {
-		if r.Name == name && r.Root != "" {
+		if r.Name == name {
+			if r.Root == "" {
+				return func() tea.Msg {
+					return intents.AddMessage{
+						Text: fmt.Sprintf("Workspace %q has no recorded path — try 'jj workspace update-stale'", name),
+						Err:  fmt.Errorf("no recorded path"),
+					}
+				}
+			}
 			root := r.Root
 			return func() tea.Msg { return SwitchWorkspaceMsg{WorkspaceRoot: root} }
 		}
 	}
 
-	// Resolve via jj workspace root --name (works in jj ≥ 0.38).
 	return func() tea.Msg {
-		output, err := m.context.RunCommandImmediate(
-			[]string{"workspace", "root", "--name", name},
-		)
-		if err != nil {
-			return intents.AddMessage{
-				Text: fmt.Sprintf("Cannot switch to workspace %q: %v", name, err),
-				Err:  err,
-			}
+		return intents.AddMessage{
+			Text: fmt.Sprintf("Workspace %q not found", name),
+			Err:  fmt.Errorf("workspace not found"),
 		}
-		root := strings.TrimSpace(string(output))
-		if root == "" {
-			return intents.AddMessage{
-				Text: fmt.Sprintf("Workspace root is empty for %q", name),
-				Err:  fmt.Errorf("empty workspace root"),
-			}
-		}
-		return SwitchWorkspaceMsg{WorkspaceRoot: root}
 	}
 }
 
@@ -285,9 +278,19 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 			styleOverride = m.selectedStyle
 		}
 
+		currentMarker := "  "
+		if row.Current {
+			currentMarker = "> "
+		}
+
 		y := itemRect.Min.Y
-		for _, line := range row.Lines {
+		for i, line := range row.Lines {
 			var content bytes.Buffer
+			if i == 0 {
+				content.WriteString(styleOverride.Render(currentMarker))
+			} else {
+				content.WriteString(styleOverride.Render("  "))
+			}
 			for _, segment := range line.Segments {
 				text := segment.Text
 				style := segment.Style.Inherit(styleOverride)
@@ -330,13 +333,19 @@ func (m *Model) load() tea.Cmd {
 			roots = make(map[string]string)
 		}
 
+		// Fetch current workspace root (no args = current workspace)
+		var currentRoot string
+		if out, err := m.context.RunCommandImmediate(jj.WorkspaceCurrent()); err == nil {
+			currentRoot = strings.TrimSpace(string(out))
+		}
+
 		// Fetch colored display output
 		output, err := m.context.RunCommandImmediate(jj.WorkspaceList())
 		if err != nil {
 			panic(err)
 		}
 
-		rows := parseRows(bytes.NewReader(output), roots)
+		rows := parseRows(bytes.NewReader(output), roots, currentRoot)
 		return updateWorkspaceMsg{Rows: rows}
 	}
 }

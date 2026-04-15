@@ -5,9 +5,10 @@ import (
 )
 
 type row struct {
-	Name  string
-	Root  string
-	Lines []*rowLine
+	Name    string
+	Root    string
+	Current bool
+	Lines   []*rowLine
 }
 
 func (r *row) GetSearchableLines() []screen.SearchableLine {
