@@ -1844,3 +1844,30 @@ func Test_ResumeMsg_ReEnablesMode2031AndQueriesBackground(t *testing.T) {
 	assert.False(t, foundProbe2031, "resume should not re-probe mode 2031 support; the initial probe result still applies")
 	assert.False(t, foundPollTick, "resume should not restart polling; the existing poll loop survives suspension")
 }
+
+func Test_ExpandStatus_WorksInWorkspaceView(t *testing.T) {
+	origBindings := config.Current.Bindings
+	defer func() { config.Current.Bindings = origBindings }()
+	config.Current.Bindings = []config.BindingConfig{
+		{Action: "ui.expand_status", Scope: "ui", Key: config.StringList{"?"}},
+		{Action: "workspace.close", Scope: "workspace", Key: config.StringList{"esc"}},
+		{Action: "workspace.move_up", Scope: "workspace", Key: config.StringList{"k"}},
+		{Action: "workspace.move_down", Scope: "workspace", Key: config.StringList{"j"}},
+	}
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+	model.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+
+	// Open workspace view
+	model.Update(intents.WorkspaceOpen{})
+	require.NotNil(t, model.workspace, "workspace should be open")
+
+	// ? should toggle status expansion regardless of truncation
+	_ = model.View()
+	cmd, handled := dispatchAction(model, "ui.expand_status", nil)
+	assert.True(t, handled, "ui.expand_status should be handled in workspace view")
+	_ = cmd
+	assert.True(t, model.status.StatusExpanded(), "? should expand status bar in workspace view")
+}

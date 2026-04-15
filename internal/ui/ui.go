@@ -652,7 +652,7 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		return m.diff.Update(intent), true
 	// --- Status ---
 	case intents.ExpandStatusToggle:
-		m.status.ToggleStatusExpand()
+		m.status.SetStatusExpanded(!m.status.StatusExpanded())
 		return nil, true
 	}
 
