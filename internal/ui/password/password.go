@@ -6,7 +6,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -17,38 +16,26 @@ var _ common.ImmediateModel = (*Model)(nil)
 type Model struct {
 	textInput  textinput.Model
 	passwordCh chan<- []byte
-	styles     styles
-}
-
-type styles struct {
-	border lipgloss.Style
 }
 
 func New(msg common.TogglePasswordMsg) *Model {
-	styles := styles{
-		border: common.DefaultPalette.GetBorder("password border", lipgloss.NormalBorder()).Padding(1),
-	}
 	ti := textinput.New()
 	ti.Prompt = msg.Prompt
 	ti.EchoMode = textinput.EchoPassword
-	ps := ti.Styles()
-	ps.Focused.Prompt = common.DefaultPalette.Get("password title")
-	ps.Blurred.Prompt = common.DefaultPalette.Get("password title")
-	ti.SetStyles(ps)
+	ti.SetVirtualCursor(false)
 	ti.Focus()
 
 	return &Model{
-		styles:     styles,
 		textInput:  ti,
 		passwordCh: msg.Password,
 	}
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (m *Model) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopePassword,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: m,
 		},
 	}
@@ -89,7 +76,17 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
-	v := m.styles.border.Width(max(box.R.Dx()-2, 0)).Render(m.textInput.View())
+	borderStyle := common.DefaultPalette.GetBorder("password border", lipgloss.NormalBorder()).Padding(1)
+	surfaceStyle := common.DefaultPalette.Get("password")
+	ps := m.textInput.Styles()
+	ps.Focused.Prompt = common.DefaultPalette.Get("password title")
+	ps.Blurred.Prompt = common.DefaultPalette.Get("password title")
+	m.textInput.SetStyles(ps)
+
+	v := borderStyle.Width(max(box.R.Dx()-2, 0)).Render(m.textInput.View())
 	box = box.Center(lipgloss.Size(v))
+	dl.AddFill(box.R, ' ', surfaceStyle, render.ZPassword)
 	dl.AddDraw(box.R, v, render.ZPassword)
+	dl.AddPaint(box.R, surfaceStyle, render.ZPassword)
+	dl.SetCursorInRect(m.textInput.Cursor(), box.R, 2, 2)
 }

@@ -2,10 +2,15 @@ package ui
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/idursun/jjui/internal/scripting"
 	"github.com/idursun/jjui/internal/ui/actionmeta"
@@ -31,46 +36,96 @@ import (
 	"github.com/idursun/jjui/internal/ui/help"
 
 	"github.com/idursun/jjui/internal/ui/input"
+	"github.com/idursun/jjui/internal/ui/operations/target_picker"
 	"github.com/idursun/jjui/internal/ui/oplog"
-	"github.com/idursun/jjui/internal/ui/preview"
 	"github.com/idursun/jjui/internal/ui/redo"
 	"github.com/idursun/jjui/internal/ui/revisions"
 	"github.com/idursun/jjui/internal/ui/revset"
+	"github.com/idursun/jjui/internal/ui/split"
 	"github.com/idursun/jjui/internal/ui/status"
 	"github.com/idursun/jjui/internal/ui/undo"
+	"github.com/idursun/jjui/internal/ui/workspace"
 )
 
 type Model struct {
 	revisions        *revisions.Model
 	oplog            *oplog.Model
+	workspace        *workspace.Model
 	revsetModel      *revset.Model
-	previewModel     *preview.Model
 	diff             *diff.Model
 	flash            *flash.Model
 	state            common.State
 	status           *status.Model
 	password         *password.Model
 	context          *context.MainContext
-	scriptRunner     *scripting.Runner
+	scriptRunners    []scriptFrame
 	sequenceHelp     []help.Entry
 	sequenceAutoOpen bool
 	resolver         *dispatch.Resolver
 	stacked          common.StackedModel
 	displayContext   *render.DisplayContext
+	frameCursor      *tea.Cursor
 	width            int
 	height           int
-	revisionsSplit   *split
-	activeSplit      *split
+	splitContainer   *split.SplitContainer
+
+	// mode2031Supported is set when the terminal confirms it supports
+	// mode 2031 push. Once true, the OSC 11 polling loop stops.
+	mode2031Supported bool
+}
+
+type scriptFrame struct {
+	runner       *scripting.Runner
+	completionID string
 }
 
 type triggerAutoRefreshMsg struct{}
 
-const (
-	scopeUi keybindings.ScopeName = "ui"
-)
+const scopeUi keybindings.ScopeName = "ui"
+
+// colorSchemePollInterval is how often to poll the terminal for its
+// current light/dark mode.
+var colorSchemePollInterval = time.Second
 
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.revisions.Init(), m.scheduleAutoRefresh())
+}
+
+func (m *Model) selectionSnapshot() common.SelectionSnapshot {
+	var snapshot common.SelectionSnapshot
+	for _, provider := range m.selectionProviders() {
+		part := provider.Selection()
+		if snapshot.Highlighted == nil && part.Highlighted != nil {
+			snapshot.Highlighted = part.Highlighted
+		}
+		snapshot.Checked = append(snapshot.Checked, part.Checked...)
+	}
+	return snapshot
+}
+
+func (m *Model) selectionProviders() []common.SelectionProvider {
+	var providers []common.SelectionProvider
+	if provider, ok := m.stacked.(common.SelectionProvider); ok {
+		providers = append(providers, provider)
+	}
+	if m.oplog != nil {
+		providers = append(providers, m.oplog)
+	}
+	if m.revisions != nil {
+		providers = append(providers, m.revisions)
+	}
+	return providers
+}
+
+func (m *Model) syncSelection() tea.Cmd {
+	if m.context == nil {
+		return nil
+	}
+	return m.context.SetSelection(m.selectionSnapshot())
+}
+
+func (m *Model) withSelectionSync(cmd tea.Cmd) tea.Cmd {
+	return tea.Batch(cmd, m.syncSelection())
 }
 
 func (m *Model) closeTopScope(msg common.CloseViewMsg) (tea.Cmd, bool) {
@@ -85,6 +140,10 @@ func (m *Model) closeTopScope(msg common.CloseViewMsg) (tea.Cmd, bool) {
 	}
 	if m.oplog != nil {
 		m.oplog = nil
+		return nil, true
+	}
+	if m.workspace != nil {
+		m.workspace = nil
 		return common.SelectionChanged(m.context.SelectedItem), true
 	}
 	return nil, false
@@ -93,7 +152,7 @@ func (m *Model) closeTopScope(msg common.CloseViewMsg) (tea.Cmd, bool) {
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	if closeMsg, ok := msg.(common.CloseViewMsg); ok {
 		if cmd, handled := m.closeTopScope(closeMsg); handled {
-			return cmd
+			return m.withSelectionSync(cmd)
 		}
 	}
 
@@ -106,19 +165,37 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 				render.SetWidthMethod(ansi.GraphemeWidth)
 			}
 		}
+		// reply from initial ansi.RequestModeLightDark check
+		if msg.Mode == ansi.ModeLightDark && !msg.Value.IsNotRecognized() {
+			m.mode2031Supported = true
+		}
 		return nil
 	case tea.FocusMsg:
 		if m.state == common.Ready {
 			return common.RefreshAndKeepSelections
 		}
 		return nil
-	case tea.MouseReleaseMsg:
-		m.activeSplit = nil
-	case tea.MouseMotionMsg:
-		if m.activeSplit != nil {
-			mouse := msg.Mouse()
-			m.activeSplit.DragTo(mouse.X, mouse.Y)
+	case tea.ResumeMsg:
+		// common.Suspend disables mode 2031 on the way out, reenable it on resume.
+		// Also re-query the background color in case the theme changed while suspended.
+		return tea.Batch(
+			tea.Raw(ansi.SetModeLightDark),
+			tea.RequestBackgroundColor,
+		)
+	case uv.DarkColorSchemeEvent:
+		return m.applyColorScheme(true)
+	case uv.LightColorSchemeEvent:
+		return m.applyColorScheme(false)
+	case tea.BackgroundColorMsg:
+		return m.applyColorScheme(msg.IsDark())
+	case colorSchemePollTickMsg:
+		if m.mode2031Supported {
 			return nil
+		}
+		return tea.Batch(tea.RequestBackgroundColor, scheduleColorSchemePoll())
+	case tea.MouseReleaseMsg, tea.MouseMotionMsg:
+		if cmd, handled := m.handleSplitMouseMsg(msg); handled {
+			return cmd
 		}
 	case tea.MouseClickMsg, tea.MouseWheelMsg:
 		if m.displayContext != nil {
@@ -143,16 +220,16 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 				return luaCmd(result.LuaScript)
 			}
 			if result.Intent != nil {
-				start := slices.IndexFunc(scopes, func(scope dispatch.Scope) bool {
+				start := slices.IndexFunc(scopes, func(scope common.Scope) bool {
 					return string(scope.Name) == result.Scope
 				})
 				if start < 0 {
 					return nil
 				}
-				if cmd, handled := dispatch.RouteIntent(scopes[start:], result.Intent); handled {
-					return cmd
+				if cmd, handled := common.RouteIntent(scopes[start:], result.Intent); handled {
+					return m.withSelectionSync(cmd)
 				}
-				if scopes[start].Leak != dispatch.LeakAll {
+				if scopes[start].Leak != common.LeakAll {
 					return m.updateBlockingScope(scopes[start], msg)
 				}
 				return nil
@@ -162,7 +239,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			}
 
 			for _, scope := range scopes {
-				if scope.Leak != dispatch.LeakAll {
+				if scope.Leak != common.LeakAll {
 					return m.updateBlockingScope(scope, msg)
 				}
 			}
@@ -171,12 +248,14 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case intents.Intent:
 		if cmd, handled := m.HandleIntent(msg); handled {
-			return cmd
+			return m.withSelectionSync(cmd)
 		}
 	case common.ExecMsg:
 		return exec_process.ExecLine(m.context, msg)
 	case common.ExecProcessCompletedMsg:
 		cmds = append(cmds, common.Refresh)
+	case workspace.SwitchWorkspaceMsg:
+		return m.switchToWorkspace(msg.WorkspaceRoot)
 	case common.UpdateRevisionsSuccessMsg:
 		m.state = common.Ready
 	case triggerAutoRefreshMsg:
@@ -192,25 +271,31 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.revsetModel.Update(msg)
 		return common.Refresh
 	case common.RunLuaScriptMsg:
-		if m.scriptRunner != nil && !m.scriptRunner.Done() {
+		if msg.CompletionID == "" && m.scriptRunning() {
 			err := fmt.Errorf("lua script is already running")
 			return intents.Invoke(intents.AddMessage{Text: err.Error(), Err: err})
 		}
 		runner, cmd, err := scripting.RunScript(m.context, msg.Script)
 		if err != nil {
-			return func() tea.Msg {
+			return tea.Sequence(func() tea.Msg {
 				return common.CommandCompletedMsg{Err: err}
-			}
+			}, actionCompleted(msg.CompletionID))
 		}
-		m.scriptRunner = runner
-		if cmd == nil && (runner == nil || runner.Done()) {
-			m.scriptRunner = nil
+		if runner != nil && !runner.Done() {
+			m.scriptRunners = append(m.scriptRunners, scriptFrame{
+				runner:       runner,
+				completionID: msg.CompletionID,
+			})
+			return cmd
 		}
-		return cmd
+		return tea.Sequence(cmd, actionCompleted(msg.CompletionID))
 	case common.DispatchActionMsg:
 		if actionmeta.IsBuiltInAction(msg.Action) {
 			if err := actionmeta.ValidateBuiltInActionArgs(msg.Action, msg.Args); err != nil {
-				return intents.Invoke(intents.AddMessage{Text: err.Error(), Err: err})
+				return tea.Sequence(
+					intents.Invoke(intents.AddMessage{Text: err.Error(), Err: err}),
+					actionCompleted(msg.CompletionID),
+				)
 			}
 		}
 		action := keybindings.Action(strings.TrimSpace(msg.Action))
@@ -221,14 +306,14 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			result = m.resolver.ResolveAction(action, msg.Args)
 		}
 		if result.LuaScript != "" {
-			return luaCmd(result.LuaScript)
+			return luaCmdWithCompletion(result.LuaScript, msg.CompletionID)
 		}
 		if result.Intent != nil {
 			scopes := m.dispatchScopes()
-			cmd, _ := dispatch.RouteIntent(scopes, result.Intent)
-			return cmd
+			cmd, _ := common.RouteIntent(scopes, result.Intent)
+			return tea.Sequence(m.withSelectionSync(cmd), actionCompleted(msg.CompletionID))
 		}
-		return nil
+		return actionCompleted(msg.CompletionID)
 	case common.ShowChooseMsg:
 		model := choose.NewWithOptions(msg.Options, msg.Title, msg.Filter, msg.Ordered)
 		m.stacked = model
@@ -238,15 +323,32 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case choose.CancelledMsg:
 		m.stacked = nil
 	case common.ShowInputMsg:
-		model := input.NewWithTitle(msg.Title, msg.Prompt)
+		model := input.NewWithTitle(msg.Title, msg.Prompt, msg.Value)
 		m.stacked = model
 		return m.stacked.Init()
 	case input.SelectedMsg, input.CancelledMsg:
 		m.stacked = nil
 	case common.ShowPreview:
-		m.previewModel.SetVisible(bool(msg))
-		cmds = append(cmds, common.SelectionChanged(m.context.SelectedItem))
+		if cmd, handled := m.handleSplitMsg(msg); handled {
+			cmds = append(cmds, cmd)
+		}
 		return tea.Batch(cmds...)
+	case common.OpenTargetPickerMsg:
+		if m.diff != nil {
+			model := target_picker.NewModel(m.context, msg.Payload, msg.Sources...)
+			m.stacked = model
+			return m.stacked.Init()
+		}
+	case target_picker.TargetSelectedMsg:
+		if m.diff != nil && m.stacked != nil {
+			m.stacked = nil
+			return m.diff.Update(msg)
+		}
+	case target_picker.TargetPickerCancelMsg:
+		if m.diff != nil && m.stacked != nil {
+			m.stacked = nil
+			return nil
+		}
 	case common.TogglePasswordMsg:
 		if m.password != nil {
 			// let the current prompt clean itself
@@ -260,10 +362,9 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			//   - if the user denies the request on the device, a new prompt automatically happen "Enter PIN for ...
 			m.password = password.New(msg)
 		}
-	case SplitDragMsg:
-		m.activeSplit = msg.Split
-		if m.activeSplit != nil {
-			m.activeSplit.DragTo(msg.X, msg.Y)
+	case split.SplitDragMsg:
+		if cmd, handled := m.handleSplitMsg(msg); handled {
+			return cmd
 		}
 
 	case tea.WindowSizeMsg:
@@ -276,10 +377,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	if common.IsInputMessage(msg) {
 		if m.oplog != nil {
 			cmds = append(cmds, m.oplog.Update(msg))
+		} else if m.workspace != nil {
+			cmds = append(cmds, m.workspace.Update(msg))
 		} else {
 			cmds = append(cmds, m.revisions.Update(msg))
 		}
-		return tea.Batch(cmds...)
+		return m.withSelectionSync(tea.Batch(cmds...))
 	}
 
 	cmds = append(cmds, m.revsetModel.Update(msg))
@@ -293,66 +396,27 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		cmds = append(cmds, m.stacked.Update(msg))
 	}
 
-	if m.scriptRunner != nil {
-		if cmd := m.scriptRunner.HandleMsg(msg); cmd != nil {
+	if len(m.scriptRunners) > 0 {
+		if cmd := m.handleScriptMsg(msg); cmd != nil {
 			cmds = append(cmds, cmd)
-		}
-		if m.scriptRunner.Done() {
-			m.scriptRunner = nil
 		}
 	}
 
 	if m.oplog != nil {
 		cmds = append(cmds, m.oplog.Update(msg))
+	} else if m.workspace != nil {
+		cmds = append(cmds, m.workspace.Update(msg))
 	} else {
 		cmds = append(cmds, m.revisions.Update(msg))
 	}
 
-	if m.previewModel.Visible() {
-		cmds = append(cmds, m.previewModel.Update(msg))
-	}
+	cmds = append(cmds, m.updateSplit(msg))
 
-	return tea.Batch(cmds...)
+	return m.withSelectionSync(tea.Batch(cmds...))
 }
 
 func (m *Model) updateStatus() {
-	mode := m.statusMode()
-	if mode != "" {
-		m.status.SetMode(mode)
-	}
-
-	if m.sequenceHelp != nil {
-		m.status.SetHelp(m.sequenceHelp)
-	} else {
-		m.status.SetScopes(m.dispatchScopes())
-	}
-}
-
-func (m *Model) statusMode() string {
-	if scope, ok := m.stackedScope(); ok {
-		if scope == actions.ScopeCommandHistory {
-			return "history"
-		}
-		return string(scope)
-	}
-
-	switch {
-	case m.diff != nil:
-		return "diff"
-	case m.oplog != nil:
-		return "oplog"
-	case m.revsetModel.Editing:
-		return "revset"
-	default:
-		return m.revisions.CurrentOperation().Name()
-	}
-}
-
-func (m *Model) UpdatePreviewPosition() {
-	if m.previewModel.AutoPosition() {
-		atBottom := m.height >= m.width/2
-		m.previewModel.SetPosition(true, atBottom)
-	}
+	m.status.Sync(m.dispatchScopes(), m.sequenceHelp)
 }
 
 func (m *Model) View() string {
@@ -370,12 +434,11 @@ func (m *Model) View() string {
 	if m.diff != nil {
 		m.renderDiffLayout(box)
 	} else {
-		if m.previewModel.Visible() {
-			m.UpdatePreviewPosition()
-		}
-		m.syncPreviewSplitOrientation()
+		m.updateSplitAutoPosition()
 		if m.oplog != nil {
 			m.renderOpLogLayout(box)
+		} else if m.workspace != nil {
+			m.renderWorkspaceLayout(box)
 		} else {
 			m.renderRevisionsLayout(box)
 		}
@@ -396,6 +459,7 @@ func (m *Model) View() string {
 
 	m.displayContext.Render(screenBuf)
 	finalView := screenBuf.Render()
+	m.frameCursor = m.displayContext.Cursor()
 	return strings.ReplaceAll(finalView, "\r", "")
 }
 
@@ -408,6 +472,12 @@ func (m *Model) renderDiffLayout(box layout.Box) {
 func (m *Model) renderOpLogLayout(box layout.Box) {
 	m.renderWithStatus(box, func(content layout.Box) {
 		m.renderSplit(m.oplog, content)
+	})
+}
+
+func (m *Model) renderWorkspaceLayout(box layout.Box) {
+	m.renderWithStatus(box, func(content layout.Box) {
+		m.renderSplit(m.workspace, content)
 	})
 }
 
@@ -430,33 +500,6 @@ func (m *Model) renderWithStatus(box layout.Box, renderContent func(layout.Box))
 	m.status.ViewRect(m.displayContext, rows[1])
 }
 
-func (m *Model) renderSplit(primary common.ImmediateModel, box layout.Box) {
-	if m.revisionsSplit == nil {
-		return
-	}
-	m.revisionsSplit.Primary = primary
-	m.revisionsSplit.Secondary = m.previewModel
-	m.revisionsSplit.Render(m.displayContext, box)
-}
-
-func (m *Model) syncPreviewSplitOrientation() {
-	if m.revisionsSplit == nil {
-		return
-	}
-	vertical := m.previewModel.AtBottom()
-	m.revisionsSplit.Vertical = vertical
-}
-
-func (m *Model) initSplit() {
-	splitState := newSplitState(config.Current.Preview.WidthPercentage)
-
-	m.revisionsSplit = newSplit(
-		splitState,
-		m.revisions,
-		m.previewModel,
-	)
-}
-
 func (m *Model) scheduleAutoRefresh() tea.Cmd {
 	interval := config.Current.UI.AutoRefreshInterval
 	if interval > 0 {
@@ -467,30 +510,43 @@ func (m *Model) scheduleAutoRefresh() tea.Cmd {
 	return nil
 }
 
-func (m *Model) dispatchScopes() []dispatch.Scope {
-	var scopes []dispatch.Scope
+func (m *Model) dispatchScopes() []common.Scope {
+	var scopes []common.Scope
 
 	if m.password != nil {
 		scopes = append(scopes, m.password.Scopes()...)
 	}
+
 	scopes = append(scopes, m.status.Scopes()...)
-	scopes = append(scopes, m.revsetModel.Scopes()...)
+	if m.revsetModel.IsEditing() {
+		scopes = append(scopes, m.revsetModel.Scopes()...)
+	}
+
+	if m.stacked != nil && m.diff != nil {
+		scopes = append(scopes, m.stacked.Scopes()...)
+	}
 
 	if m.diff != nil {
 		scopes = append(scopes, m.diff.Scopes()...)
 	}
-	if m.stacked != nil {
+
+	if m.stacked != nil && m.diff == nil {
 		scopes = append(scopes, m.stacked.Scopes()...)
 	} else if m.oplog != nil {
 		scopes = append(scopes, m.oplog.Scopes()...)
+	} else if m.workspace != nil {
+		scopes = append(scopes, m.workspace.Scopes()...)
 	} else {
 		scopes = append(scopes, m.revisions.Scopes()...)
 	}
 
-	scopes = append(scopes, m.previewModel.Scopes()...)
-	scopes = append(scopes, dispatch.Scope{
+	scopes = append(scopes, m.splitScopes()...)
+	if !m.revsetModel.IsEditing() {
+		scopes = append(scopes, m.revsetModel.Scopes()...)
+	}
+	scopes = append(scopes, common.Scope{
 		Name:    scopeUi,
-		Leak:    dispatch.LeakNone,
+		Leak:    common.LeakNone,
 		Global:  true,
 		Handler: m,
 	})
@@ -503,18 +559,20 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 
 	// --- Quit / Suspend ---
 	case intents.Quit:
-		return tea.Quit, true
+		return common.Quit(), true
 	case intents.Suspend:
-		return tea.Suspend, true
+		return common.Suspend(), true
+	case intents.ChangeTheme:
+		return m.changeTheme(intent), true
 
 	// --- Cancel fallback (only reached if no inner scope handled it) ---
 	case intents.Cancel:
-		if m.stacked != nil || m.diff != nil || m.oplog != nil {
-			return common.Close, true
-		}
 		if m.flash.Any() {
 			m.flash.DeleteOldest()
 			return nil, true
+		}
+		if m.stacked != nil || m.diff != nil || m.oplog != nil || m.workspace != nil {
+			return common.Close, true
 		}
 		if m.status.StatusExpanded() {
 			m.status.ToggleStatusExpand()
@@ -539,6 +597,9 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	case intents.OpLogOpen:
 		m.oplog = oplog.New(m.context)
 		return m.oplog.Init(), true
+	case intents.WorkspaceOpen:
+		m.workspace = workspace.New(m.context)
+		return m.workspace.Init(), true
 	case intents.Undo:
 		model := undo.NewModel(m.context)
 		m.stacked = model
@@ -577,68 +638,18 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 			return nil, true
 		}
 		out, _ := m.context.RunCommandImmediate(jj.FilesInRevision(rev))
-		return common.FileSearch(m.context.CurrentRevset, m.previewModel.Visible(), rev, out), true
+		return common.FileSearch(m.context.CurrentRevset, rev, out), true
 
-	// --- Preview controls ---
-	case intents.PreviewToggle:
-		m.previewModel.ToggleVisible()
-		return common.SelectionChanged(m.context.SelectedItem), true
-	case intents.PreviewToggleBottom:
-		previewPos := m.previewModel.AtBottom()
-		m.previewModel.SetPosition(false, !previewPos)
-		if m.previewModel.Visible() {
-			return nil, true
-		}
-		m.previewModel.ToggleVisible()
-		return common.SelectionChanged(m.context.SelectedItem), true
-	case intents.PreviewExpand:
-		if !m.previewModel.Visible() {
-			return nil, true
-		}
-		if m.revisionsSplit != nil && m.revisionsSplit.State != nil {
-			m.revisionsSplit.State.Expand(config.Current.Preview.WidthIncrementPercentage)
-		}
-		return nil, true
-	case intents.PreviewShrink:
-		if !m.previewModel.Visible() {
-			return nil, true
-		}
-		if m.revisionsSplit != nil && m.revisionsSplit.State != nil {
-			m.revisionsSplit.State.Shrink(config.Current.Preview.WidthIncrementPercentage)
-		}
-		return nil, true
-	case intents.PreviewScroll:
-		if !m.previewModel.Visible() {
-			return nil, true
-		}
-		switch intent.Kind {
-		case intents.PreviewScrollUp:
-			return m.previewModel.Scroll(-1), true
-		case intents.PreviewScrollDown:
-			return m.previewModel.Scroll(1), true
-		case intents.PreviewPageUp:
-			return m.previewModel.PageUp(), true
-		case intents.PreviewPageDown:
-			return m.previewModel.PageDown(), true
-		case intents.PreviewHalfPageUp:
-			return m.previewModel.HalfPageUp(), true
-		case intents.PreviewHalfPageDown:
-			return m.previewModel.HalfPageDown(), true
-		}
-		return nil, true
+	// --- Split controls ---
+	case intents.PreviewToggle, intents.PreviewToggleBottom, intents.PreviewExpand, intents.PreviewShrink, intents.PreviewShow:
+		return m.handleSplitIntent(intent)
 
 	// --- Delegated intents ---
 	case intents.DiffShow:
 		if m.diff == nil {
-			m.diff = diff.New("")
+			m.diff = diff.NewWithContext(m.context, "", nil)
 		}
 		return m.diff.Update(intent), true
-	case intents.PreviewShow:
-		if !m.previewModel.Visible() {
-			m.previewModel.ToggleVisible()
-		}
-		return m.previewModel.Update(intent), true
-
 	// --- Status ---
 	case intents.ExpandStatusToggle:
 		m.status.ToggleStatusExpand()
@@ -649,9 +660,81 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 }
 
 func luaCmd(script string) tea.Cmd {
+	return luaCmdWithCompletion(script, "")
+}
+
+func luaCmdWithCompletion(script string, completionID string) tea.Cmd {
 	return func() tea.Msg {
-		return common.RunLuaScriptMsg{Script: script}
+		return common.RunLuaScriptMsg{Script: script, CompletionID: completionID}
 	}
+}
+
+func actionCompleted(id string) tea.Cmd {
+	if id == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		return common.ActionCompletedMsg{ID: id}
+	}
+}
+
+func (m *Model) scriptRunning() bool {
+	return len(m.scriptRunners) > 0
+}
+
+func (m *Model) handleScriptMsg(msg tea.Msg) tea.Cmd {
+	if len(m.scriptRunners) == 0 {
+		return nil
+	}
+	top := len(m.scriptRunners) - 1
+	frame := m.scriptRunners[top]
+	cmd := frame.runner.HandleMsg(msg)
+	if !frame.runner.Done() {
+		return cmd
+	}
+	m.scriptRunners = m.scriptRunners[:top]
+	return tea.Sequence(cmd, actionCompleted(frame.completionID))
+}
+
+func (m *Model) changeTheme(intent intents.ChangeTheme) tea.Cmd {
+	name := strings.TrimSpace(intent.Name)
+	if name == "" {
+		err := fmt.Errorf("theme name is required")
+		return intents.Invoke(intents.AddMessage{Text: err.Error(), Err: err})
+	}
+
+	oldDark := config.Current.UI.Theme.Dark
+	oldLight := config.Current.UI.Theme.Light
+
+	if m.context.TerminalHasDarkBackground {
+		config.Current.UI.Theme.Dark = name
+	} else {
+		config.Current.UI.Theme.Light = name
+	}
+
+	if err := m.validateRuntimeThemeChange(); err != nil {
+		config.Current.UI.Theme.Dark = oldDark
+		config.Current.UI.Theme.Light = oldLight
+		return intents.Invoke(intents.AddMessage{Text: err.Error(), Err: err})
+	}
+
+	cmd := m.reloadActiveTheme()
+	log.Printf("theme changed to %q", name)
+	return cmd
+}
+
+func (m *Model) validateRuntimeThemeChange() error {
+	_, err := config.ResolveTheme(m.context.TerminalHasDarkBackground, m.context.JJConfig.GetApplicableColors())
+	return err
+}
+
+func (m *Model) switchToWorkspace(workspaceRoot string) tea.Cmd {
+	m.workspace = nil
+	p := &workspaceSwitchProcess{location: workspaceRoot}
+	return tea.Exec(p, func(err error) tea.Msg {
+		// After the child jjui exits, quit this instance
+		return tea.QuitMsg{}
+	})
 }
 
 func (m *Model) stackedScope() (keybindings.ScopeName, bool) {
@@ -665,30 +748,74 @@ func (m *Model) stackedScope() (keybindings.ScopeName, bool) {
 	return scopes[0].Name, true
 }
 
-func (m *Model) updateBlockingScope(scope dispatch.Scope, msg tea.KeyMsg) tea.Cmd {
+func (m *Model) updateBlockingScope(scope common.Scope, msg tea.KeyMsg) tea.Cmd {
 	if scope.Handler == m {
 		return nil
 	}
 	if scope.Handler == m.revsetModel {
 		m.state = common.Loading
 	}
-	return scope.Handler.Update(msg)
+	return m.withSelectionSync(scope.Handler.Update(msg))
 }
 
 var _ tea.Model = (*wrapper)(nil)
 
+// workspaceSwitchProcess re-execs jjui pointed at a different workspace directory.
+type workspaceSwitchProcess struct {
+	location string
+	stdin    io.Reader
+	stdout   io.Writer
+	stderr   io.Writer
+}
+
+func (p *workspaceSwitchProcess) Run() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, p.location)
+	cmd.Stdin = p.stdin
+	cmd.Stdout = p.stdout
+	cmd.Stderr = p.stderr
+	return cmd.Run()
+}
+
+func (p *workspaceSwitchProcess) SetStdin(r io.Reader)  { p.stdin = r }
+func (p *workspaceSwitchProcess) SetStdout(w io.Writer) { p.stdout = w }
+func (p *workspaceSwitchProcess) SetStderr(w io.Writer) { p.stderr = w }
+
 type (
-	frameTickMsg struct{}
-	wrapper      struct {
+	frameTickMsg           struct{}
+	colorSchemePollTickMsg struct{}
+	wrapper                struct {
 		ui                 *Model
 		scheduledNextFrame bool
 		render             bool
 		cachedFrame        string
+		cachedCursor       *tea.Cursor
 	}
 )
 
 func (w *wrapper) Init() tea.Cmd {
-	return w.ui.Init()
+	return tea.Batch(
+		w.ui.Init(),
+		// Enable mode 2031 push notifications and probe whether the terminal
+		// supports it. If supported, the mode request returns a tea.ModeReportMsg
+		// with ansi.ModeLightDark, and uv.Light/DarkColorSchemeEvent are delivered
+		// on OS theme change.
+		tea.Raw(ansi.SetModeLightDark),
+		tea.Raw(ansi.RequestModeLightDark),
+		// Start OSC 11 polling as a baseline for light/dark mode detection
+		scheduleColorSchemePoll(),
+	)
+}
+
+// scheduleColorSchemePoll returns a Cmd that fires a colorSchemePollTickMsg
+// after colorSchemePollInterval.
+func scheduleColorSchemePoll() tea.Cmd {
+	return tea.Tick(colorSchemePollInterval, func(time.Time) tea.Msg {
+		return colorSchemePollTickMsg{}
+	})
 }
 
 func (w *wrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -699,6 +826,14 @@ func (w *wrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	cmd = w.ui.Update(msg)
+	if _, ok := msg.(common.ExecMsg); ok {
+		// Force a fresh frame before Bubble Tea releases/restores the terminal
+		// for tea.Exec. Otherwise RestoreTerminal can repaint using the last
+		// cached cursor-bearing frame from the command prompt.
+		w.render = true
+		w.scheduledNextFrame = false
+		return w, cmd
+	}
 	if !w.scheduledNextFrame {
 		w.scheduledNextFrame = true
 		return w, tea.Batch(cmd, tea.Tick(time.Millisecond*8, func(t time.Time) tea.Msg {
@@ -711,13 +846,20 @@ func (w *wrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (w *wrapper) View() tea.View {
 	if w.render {
 		w.cachedFrame = w.ui.View()
+		w.cachedCursor = w.ui.frameCursor
 		w.render = false
 	}
 	v := tea.NewView(w.cachedFrame)
-	v.WindowTitle = fmt.Sprintf("jjui - %s", w.ui.context.Location)
+	v.Cursor = w.cachedCursor
+	if config.Current.UI.SetWindowTitle {
+		v.WindowTitle = fmt.Sprintf("jjui - %s", w.ui.context.Location)
+	}
 	v.AltScreen = true
 	v.ReportFocus = true
 	v.MouseMode = tea.MouseModeCellMotion
+	if !config.Current.UI.MouseSupport {
+		v.MouseMode = tea.MouseModeNone
+	}
 	return v
 }
 
@@ -725,20 +867,18 @@ func NewUI(c *context.MainContext) *Model {
 	revisionsModel := revisions.New(c)
 	statusModel := status.New(c)
 	flashView := flash.New()
-	previewModel := preview.New(c)
 	revsetModel := revset.New(c)
 
 	ui := &Model{
-		context:      c,
-		state:        common.Loading,
-		revisions:    revisionsModel,
-		previewModel: previewModel,
-		status:       statusModel,
-		revsetModel:  revsetModel,
-		flash:        flashView,
+		context:     c,
+		state:       common.Loading,
+		revisions:   revisionsModel,
+		status:      statusModel,
+		revsetModel: revsetModel,
+		flash:       flashView,
 	}
+	ui.initSplitContainer()
 	ui.initResolver()
-	ui.initSplit()
 	return ui
 }
 
@@ -777,6 +917,31 @@ func (m *Model) initResolver() {
 		return
 	}
 	m.resolver = dispatch.NewResolver(dispatcher)
+}
+
+// applyColorScheme reloads the palette when the terminal's color scheme
+// changes (that is, the OS switched between light and dark mode).
+func (m *Model) applyColorScheme(isDark bool) tea.Cmd {
+	if isDark == m.context.TerminalHasDarkBackground {
+		return nil
+	}
+	scheme := "light"
+	if isDark {
+		scheme = "dark"
+	}
+	log.Printf("color scheme changed to %s", scheme)
+	m.context.TerminalHasDarkBackground = isDark
+	return m.reloadActiveTheme()
+}
+
+func (m *Model) reloadActiveTheme() tea.Cmd {
+	theme, err := config.ResolveTheme(m.context.TerminalHasDarkBackground, m.context.JJConfig.GetApplicableColors())
+	if err != nil {
+		log.Printf("failed to resolve theme: %v", err)
+		return nil
+	}
+	common.DefaultPalette.Update(theme)
+	return func() tea.Msg { return common.ThemeChangedMsg{} }
 }
 
 func New(c *context.MainContext) tea.Model {

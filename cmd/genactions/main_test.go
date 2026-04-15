@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"os"
 	"path/filepath"
@@ -96,6 +97,43 @@ func TestGeneratedCatalogIsUpToDate(t *testing.T) {
 	metaCurrent, err := os.ReadFile(filepath.Join(root, "internal/ui/actionmeta/builtins_gen.go"))
 	require.NoError(t, err)
 	require.Equal(t, string(metaCurrent), string(metaGenerated), "generated action meta is stale; run `go run ./cmd/genactions`")
+}
+
+func TestGeneratedLuaTypesIsUpToDate(t *testing.T) {
+	root := repoRoot(t)
+
+	intents, err := collectIntentTypeMeta(filepath.Join(root, "internal/ui/intents"))
+	require.NoError(t, err)
+
+	rules, err := collectBindRules(filepath.Join(root, "internal/ui/intents"))
+	require.NoError(t, err)
+	enums, err := collectEnumTypeMeta(filepath.Join(root, "internal/ui/intents"))
+	require.NoError(t, err)
+
+	err = validateRules(rules, intents, enums)
+	require.NoError(t, err)
+	actionIDs := deriveActionIDs(rules)
+
+	schemas, requiredArgs, err := deriveActionArgSchemas(rules, intents, enums)
+	require.NoError(t, err)
+
+	generated, err := generateLuaTypesSource(actionIDs, schemas, requiredArgs)
+	require.NoError(t, err)
+
+	current, err := os.ReadFile(filepath.Join(root, "internal/config/default/types.lua"))
+	require.NoError(t, err)
+	require.Equal(t, string(current), string(generated), "generated types.lua is stale; run `go run ./cmd/genactions`")
+}
+
+func TestGeneratedLuaTypes_HandWrittenFunctionsMatchRootFields(t *testing.T) {
+	generated, err := generateLuaTypesSource(nil, nil, nil)
+	require.NoError(t, err)
+
+	content := string(generated)
+	for _, fn := range luaHandWrittenFunctions {
+		require.Contains(t, content, fn.Declaration)
+		require.Contains(t, content, fmt.Sprintf("---@field %s %s", fn.FieldName, fn.FieldType))
+	}
 }
 
 func repoRoot(t *testing.T) string {

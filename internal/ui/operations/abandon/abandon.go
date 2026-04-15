@@ -11,7 +11,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -22,7 +21,7 @@ var (
 	_ operations.Operation       = (*Operation)(nil)
 	_ operations.SegmentRenderer = (*Operation)(nil)
 	_ common.Focusable           = (*Operation)(nil)
-	_ dispatch.ScopeProvider     = (*Operation)(nil)
+	_ common.ScopeProvider       = (*Operation)(nil)
 )
 
 type selectionType int
@@ -41,11 +40,6 @@ type Operation struct {
 	selectedRevisions jj.SelectedRevisions
 	selections        selections
 	current           *jj.Commit
-	styles            styles
-}
-
-type styles struct {
-	sourceMarker lipgloss.Style
 }
 
 type addSelectionMsg struct {
@@ -56,11 +50,11 @@ func (a *Operation) IsFocused() bool {
 	return true
 }
 
-func (a *Operation) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (a *Operation) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeAbandon,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: a,
 		},
 	}
@@ -75,6 +69,12 @@ func (a *Operation) Update(msg tea.Msg) tea.Cmd {
 	case intents.Intent:
 		cmd, _ := a.HandleIntent(msg)
 		return cmd
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return a.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	case addSelectionMsg:
 		a.selectedRevisions = msg.SelectedRevisions
 	}
@@ -110,7 +110,10 @@ func (a *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (a *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (a *Operation) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	if a.current.Equal(commit) {
+		return nil
+	}
 	a.current = commit
 	return nil
 }
@@ -119,11 +122,13 @@ func (a *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 	if pos != operations.RenderBeforeChangeId {
 		return ""
 	}
+
+	sourceMarkerStyle := common.DefaultPalette.Get("abandon source_marker")
 	if a.selections.has(commit.GetChangeId(), selectionTypeDescendants) {
-		return a.styles.sourceMarker.Render("<< abandon descendants of >>")
+		return sourceMarkerStyle.Render("<< abandon descendants of >>")
 	}
 	if a.selections.has(commit.GetChangeId(), selectionTypeRevision) {
-		return a.styles.sourceMarker.Render("<< abandon >>")
+		return sourceMarkerStyle.Render("<< abandon >>")
 	}
 	return ""
 }
@@ -154,10 +159,7 @@ func (a *Operation) Name() string {
 	return "abandon"
 }
 
-func NewOperation(context *context.MainContext, selectedRevisions jj.SelectedRevisions) *Operation {
-	styles := styles{
-		sourceMarker: common.DefaultPalette.Get("abandon source_marker"),
-	}
+func NewOperation(context *context.MainContext, selectedRevisions jj.SelectedRevisions, current *jj.Commit) *Operation {
 	selectionItems := make(map[string]selectionType, len(selectedRevisions.Revisions))
 	for _, revision := range selectedRevisions.Revisions {
 		if revision == nil {
@@ -173,7 +175,7 @@ func NewOperation(context *context.MainContext, selectedRevisions jj.SelectedRev
 		context:           context,
 		selectedRevisions: selectedRevisions,
 		selections:        selections{items: selectionItems},
-		styles:            styles,
+		current:           current,
 	}
 }
 

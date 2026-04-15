@@ -5,12 +5,15 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
-	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/jj"
 	"github.com/idursun/jjui/internal/parser"
+	"github.com/idursun/jjui/internal/screen"
 	"github.com/idursun/jjui/internal/ui/layout"
+	"github.com/idursun/jjui/internal/ui/operations"
+	"github.com/idursun/jjui/internal/ui/operations/bookmark"
 	"github.com/idursun/jjui/internal/ui/operations/describe"
 	"github.com/idursun/jjui/internal/ui/operations/details"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -18,6 +21,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type beforeMarkerOperation struct {
+	changeID string
+	content  string
+}
+
+func (o beforeMarkerOperation) Init() tea.Cmd { return nil }
+
+func (o beforeMarkerOperation) Update(tea.Msg) tea.Cmd { return nil }
+
+func (o beforeMarkerOperation) ViewRect(*render.DisplayContext, layout.Box) {}
+
+func (o beforeMarkerOperation) Render(commit *jj.Commit, pos operations.RenderPosition) string {
+	if pos == operations.RenderPositionBefore && commit.GetChangeId() == o.changeID {
+		return o.content
+	}
+	return ""
+}
+
+func (o beforeMarkerOperation) Name() string { return "before.marker" }
 
 func TestDisplayContextRenderer_DetailsRendersBeforeElidedMarker(t *testing.T) {
 	f, err := os.Open("testdata/jj-log-with-elided.log")
@@ -40,12 +63,10 @@ func TestDisplayContextRenderer_DetailsRendersBeforeElidedMarker(t *testing.T) {
 
 	ctx := test.NewTestContext(commandRunner)
 	op := details.NewOperation(ctx, targetRow.Commit)
-	// Details only renders for the selected commit when Current matches it.
-	_ = op.SetSelectedRevision(targetRow.Commit)
 	test.SimulateModel(op, op.Init())
 
 	// Render just the target row with the details operation active.
-	r := NewDisplayContextRenderer(lipgloss.NewStyle(), lipgloss.NewStyle(), lipgloss.NewStyle(), lipgloss.NewStyle())
+	r := NewDisplayContextRenderer()
 	r.SetSelections(nil)
 
 	width, height := 100, 15
@@ -65,6 +86,52 @@ func TestDisplayContextRenderer_DetailsRendersBeforeElidedMarker(t *testing.T) {
 	assert.NotEqual(t, -1, filePos, "expected details list to render file.txt")
 	assert.NotEqual(t, -1, elidedPos, "expected fixture to render elided revisions marker")
 	assert.Less(t, filePos, elidedPos, "expected details list to render before elided marker")
+}
+
+func TestDisplayContextRenderer_RendersBeforePositionForNonSelectedRows(t *testing.T) {
+	rows := []parser.Row{
+		{
+			Commit: &jj.Commit{ChangeId: "source", CommitId: "111111"},
+			Lines: []*parser.GraphRowLine{
+				{
+					Gutter:   parser.GraphGutter{Segments: []*screen.Segment{{Text: "@"}}},
+					Segments: []*screen.Segment{{Text: "111111 source commit"}},
+					Flags:    parser.Revision,
+				},
+			},
+		},
+		{
+			Commit: &jj.Commit{ChangeId: "target", CommitId: "222222"},
+			Lines: []*parser.GraphRowLine{
+				{
+					Gutter:   parser.GraphGutter{Segments: []*screen.Segment{{Text: "○"}}},
+					Segments: []*screen.Segment{{Text: "222222 target commit"}},
+					Flags:    parser.Revision | parser.Highlightable,
+				},
+			},
+		},
+	}
+	rows[1].Previous = &rows[0]
+
+	r := NewDisplayContextRenderer()
+	dl := render.NewDisplayContext()
+	viewRect := layout.NewBox(layout.Rect(0, 0, 80, 5))
+	op := beforeMarkerOperation{changeID: "source", content: "<< from >>"}
+
+	r.Render(dl, rows, 1, viewRect, op, nil, false, "", true)
+
+	buf := uv.NewScreenBuffer(80, 5)
+	dl.Render(buf)
+	out := buf.Render()
+
+	markerPos := strings.Index(out, "<< from >>")
+	sourcePos := strings.Index(out, "source commit")
+	targetPos := strings.Index(out, "target commit")
+	require.NotEqual(t, -1, markerPos, "expected before marker to render for non-selected row")
+	require.NotEqual(t, -1, sourcePos, "expected source row to remain visible")
+	require.NotEqual(t, -1, targetPos, "expected target row to render after measured source height")
+	assert.Less(t, markerPos, sourcePos)
+	assert.Less(t, sourcePos, targetPos)
 }
 
 // Tests that the description overlay renders correctly even when the commit has only a single line.
@@ -95,7 +162,7 @@ func TestDisplayContextRenderer_SingleRowDescriptionOverlay(t *testing.T) {
 	ctx := test.NewTestContext(commandRunner)
 	op := describe.NewOperation(ctx, targetRow.Commit)
 
-	r := NewDisplayContextRenderer(lipgloss.NewStyle(), lipgloss.NewStyle(), lipgloss.NewStyle(), lipgloss.NewStyle())
+	r := NewDisplayContextRenderer()
 	r.SetSelections(nil)
 
 	width, height := 70, 10
@@ -110,4 +177,33 @@ func TestDisplayContextRenderer_SingleRowDescriptionOverlay(t *testing.T) {
 	// The overlay content should appear in the rendered output.
 	assert.Contains(t, out, overlayContent,
 		"describe overlay should render for single-line commits")
+}
+
+func TestDisplayContextRenderer_SetBookmarkRegistersInlineCursor(t *testing.T) {
+	row := parser.Row{
+		Commit: &jj.Commit{ChangeId: "abc123", CommitId: "def456"},
+		Lines: []*parser.GraphRowLine{
+			{
+				Gutter:   parser.GraphGutter{Segments: []*screen.Segment{{Text: "|"}}},
+				Segments: []*screen.Segment{{Text: "def456 bookmark target"}},
+				Flags:    parser.Revision,
+			},
+		},
+	}
+
+	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
+	op := bookmark.NewSetBookmarkOperation(ctx, "abc123", "main")
+
+	r := NewDisplayContextRenderer()
+	dl := render.NewDisplayContext()
+	viewRect := layout.NewBox(layout.Rect(5, 3, 60, 5))
+	r.Render(dl, []parser.Row{row}, 0, viewRect, op, nil, false, "", true)
+
+	cursor := dl.Cursor()
+	require.NotNil(t, cursor)
+
+	inlineCursor := op.InlineCursor(row.Commit, operations.RenderBeforeCommitId)
+	require.NotNil(t, inlineCursor)
+	assert.Equal(t, viewRect.R.Min.X+1+inlineCursor.Position.X, cursor.Position.X)
+	assert.Equal(t, viewRect.R.Min.Y+inlineCursor.Position.Y, cursor.Position.Y)
 }

@@ -5,7 +5,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/idursun/jjui/internal/jj"
-	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -23,21 +22,21 @@ func TestHandleIntent_RevisionsModeOpeners(t *testing.T) {
 
 	ctx := test.NewTestContext(commandRunner)
 	model := New(ctx)
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 
 	_, handled := model.HandleIntent(intents.OpenDetails{})
 	assert.True(t, handled, "open_details should be handled by revisions")
 	assert.Equal(t, "details", model.CurrentOperation().Name())
 
 	model.Update(intents.Cancel{})
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 
 	_, handled = model.HandleIntent(intents.OpenRebase{})
 	assert.True(t, handled, "open_rebase should be handled by revisions")
 	assert.Equal(t, "rebase", model.CurrentOperation().Name())
 
 	model.Update(intents.Cancel{})
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 	_, handled = model.HandleIntent(intents.OpenDuplicate{})
 	assert.True(t, handled, "open_duplicate should be handled by revisions")
 	assert.Equal(t, "duplicate", model.CurrentOperation().Name())
@@ -46,7 +45,7 @@ func TestHandleIntent_RevisionsModeOpeners(t *testing.T) {
 func TestHandleIntent_OpenRebaseSeedsTrackedSelection(t *testing.T) {
 	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
 	model := New(ctx)
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 
 	_, handled := model.HandleIntent(intents.OpenRebase{})
 	assert.True(t, handled, "open_rebase should be handled by revisions")
@@ -99,7 +98,7 @@ func (o *confirmationTrackingOp) DesiredHeight(_ *jj.Commit, _ operations.Render
 func TestHandleIntent_DetailsConfirmationMoveDoesNotMoveRevisionsCursor(t *testing.T) {
 	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
 	model := New(ctx)
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 	model.SetCursor(0)
 
 	op := &confirmationTrackingOp{}
@@ -143,7 +142,7 @@ func (o *applyTrackingOp) DesiredHeight(_ *jj.Commit, _ operations.RenderPositio
 func TestHandleIntent_ApplyArgsFlowToOperation(t *testing.T) {
 	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
 	model := New(ctx)
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 
 	op := &applyTrackingOp{}
 	model.baseOp = op
@@ -156,27 +155,39 @@ func TestHandleIntent_ApplyArgsFlowToOperation(t *testing.T) {
 func TestHandleIntent_CancelClearsSelectionsInNormalMode(t *testing.T) {
 	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
 	model := New(ctx)
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 
 	rev := model.SelectedRevision()
 	if assert.NotNil(t, rev, "expected a selected revision in test data") {
-		ctx.AddCheckedItem(common.SelectedRevision{ChangeId: rev.GetChangeId(), CommitId: rev.CommitId})
+		_, handled := model.HandleIntent(intents.RevisionsToggleSelect{})
+		assert.True(t, handled)
 	}
-	before := len(ctx.CheckedItems)
+	before := len(model.Selection().Checked)
 	assert.Greater(t, before, 0, "setup should create at least one selected revision")
 
 	_, handled := model.HandleIntent(intents.Cancel{})
 	assert.True(t, handled, "revisions cancel should be consumed when there are selections")
-	assert.Equal(t, 0, len(ctx.CheckedItems), "cancel should clear selected revisions")
+	assert.Equal(t, 0, len(model.Selection().Checked), "cancel should clear selected revisions")
 }
 
 func TestHandleIntent_CancelLeaksWithoutSelectionsInNormalMode(t *testing.T) {
 	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
 	model := New(ctx)
-	model.updateGraphRows(rows, "a")
+	model.updateGraphRows(rows, "a", true)
 
-	assert.Equal(t, 0, len(ctx.CheckedItems), "setup should start with no selected revisions")
+	assert.Equal(t, 0, len(model.Selection().Checked), "setup should start with no selected revisions")
 
 	_, handled := model.HandleIntent(intents.Cancel{})
 	assert.False(t, handled, "revisions cancel should leak when there are no selections and in normal mode")
+}
+
+func TestHandleIntent_ToggleSelectWithNoRowsDoesNotPanic(t *testing.T) {
+	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
+	model := New(ctx)
+
+	assert.NotPanics(t, func() {
+		_, handled := model.HandleIntent(intents.RevisionsToggleSelect{})
+		assert.True(t, handled, "toggle_select should remain a handled revisions action even with no rows")
+	})
+	assert.Empty(t, model.Selection().Checked, "toggle_select should be a no-op when there is no selected revision")
 }

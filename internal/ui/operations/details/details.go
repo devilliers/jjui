@@ -3,9 +3,6 @@ package details
 import (
 	"bufio"
 	"fmt"
-	"path"
-	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -17,7 +14,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/confirmation"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -35,7 +31,8 @@ var (
 	_ common.Focusable             = (*Operation)(nil)
 	_ common.Editable              = (*Operation)(nil)
 	_ common.Overlay               = (*Operation)(nil)
-	_ dispatch.ScopeProvider       = (*Operation)(nil)
+	_ common.ScopeProvider         = (*Operation)(nil)
+	_ common.SelectionProvider     = (*Operation)(nil)
 )
 
 type Operation struct {
@@ -44,7 +41,6 @@ type Operation struct {
 	Current      *jj.Commit
 	revision     *jj.Commit
 	confirmation *confirmation.Model
-	styles       styles
 }
 
 func (s *Operation) IsOverlay() bool {
@@ -59,18 +55,18 @@ func (s *Operation) IsEditing() bool {
 	return s.confirmation != nil
 }
 
-func (s *Operation) Scopes() []dispatch.Scope {
-	var ret []dispatch.Scope
+func (s *Operation) Scopes() []common.Scope {
+	var ret []common.Scope
 	if s.confirmation != nil {
-		ret = append(ret, dispatch.Scope{
+		ret = append(ret, common.Scope{
 			Name:    actions.ScopeDetailsConfirmation,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: s,
 		})
 	}
-	ret = append(ret, dispatch.Scope{
+	ret = append(ret, common.Scope{
 		Name:    actions.ScopeDetails,
-		Leak:    dispatch.LeakGlobal,
+		Leak:    common.LeakGlobal,
 		Handler: s,
 	})
 	return ret
@@ -89,30 +85,19 @@ func (s *Operation) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case common.RefreshMsg:
 		return s.load(s.revision.GetChangeId())
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return s.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	case updateCommitStatusMsg:
 		items := s.createListItems(msg.summary, msg.selectedFiles)
-		s.context.ClearCheckedItems(reflect.TypeFor[context.SelectedFile]())
-
-		for _, it := range items {
-			if it.selected {
-				sel := context.SelectedFile{
-					ChangeId: s.revision.GetChangeId(),
-					CommitId: s.revision.CommitId,
-					File:     it.fileName,
-				}
-				s.context.AddCheckedItem(sel)
-			}
-		}
 		s.setItems(items)
-
-		return s.updateSelection()
+		return nil
 	default:
-		oldCursor := s.cursor
 		var cmds []tea.Cmd
 		cmds = append(cmds, s.internalUpdate(msg))
-		if s.cursor != oldCursor {
-			cmds = append(cmds, s.updateSelection())
-		}
 		return tea.Batch(cmds...)
 	}
 }
@@ -130,26 +115,15 @@ func (s *Operation) internalUpdate(msg tea.Msg) tea.Cmd {
 			prevCursor := s.cursor
 			s.setCursor(msg.Index)
 			s.rangeSelect(prevCursor, msg.Index)
-			s.syncCheckedItems()
 		case msg.Ctrl:
 			s.setCursor(msg.Index)
 			if current := s.current(); current != nil {
 				current.selected = !current.selected
-				checkedFile := context.SelectedFile{
-					ChangeId: s.revision.GetChangeId(),
-					CommitId: s.revision.CommitId,
-					File:     current.fileName,
-				}
-				if current.selected {
-					s.context.AddCheckedItem(checkedFile)
-				} else {
-					s.context.RemoveCheckedItem(checkedFile)
-				}
 			}
 		default:
 			s.setCursor(msg.Index)
 		}
-		return s.updateSelection()
+		return nil
 	case FileListScrollMsg:
 		if msg.Horizontal {
 			return nil
@@ -169,29 +143,6 @@ func (s *Operation) internalUpdate(msg tea.Msg) tea.Cmd {
 }
 
 func (s *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
-	oldCursor := s.cursor
-	cmd, handled := s.handleIntentInner(intent)
-	if handled && s.cursor != oldCursor {
-		if selCmd := s.updateSelection(); selCmd != nil {
-			return tea.Batch(cmd, selCmd), true
-		}
-	}
-	return cmd, handled
-}
-
-func (s *Operation) updateSelection() tea.Cmd {
-	current := s.current()
-	if current == nil {
-		return nil
-	}
-	return s.context.SetSelectedItem(context.SelectedFile{
-		ChangeId: s.revision.GetChangeId(),
-		CommitId: s.revision.CommitId,
-		File:     current.fileName,
-	})
-}
-
-func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 	switch intent := intent.(type) {
 	case intents.Apply:
 		if s.confirmation != nil {
@@ -214,7 +165,7 @@ func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 	case intents.DetailsClose:
 		return common.Close, true
 	case intents.Quit:
-		return tea.Quit, true
+		return common.Quit(), true
 	case intents.Refresh:
 		return common.Refresh, true
 	case intents.DetailsDiff:
@@ -223,8 +174,9 @@ func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 			return nil, true
 		}
 		return func() tea.Msg {
+			args := jj.Diff(s.revision.GetChangeId(), "")
 			output, _ := s.context.RunCommandImmediate(jj.Diff(s.revision.GetChangeId(), selected.fileName))
-			return intents.DiffShow{Content: string(output)}
+			return intents.DiffShow{Content: string(output), Args: args}
 		}, true
 	case intents.DetailsSplit:
 		selectedFiles := s.getSelectedFiles(true)
@@ -279,7 +231,7 @@ func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 			[]string{"Are you sure you want to absorb changes from the selected files?"},
 			confirmation.WithStylePrefix("revisions"),
 			confirmation.WithOption("Yes",
-				s.context.RunCommand(jj.Absorb(s.revision.GetChangeId(), selectedFiles...), common.Refresh, confirmation.Close),
+				s.context.RunCommand(jj.Absorb(s.revision.GetChangeId(), nil, selectedFiles...), common.Refresh, confirmation.Close),
 				key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yes"))),
 			confirmation.WithOption("No",
 				confirmation.Close,
@@ -289,20 +241,7 @@ func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 		return s.confirmation.Init(), true
 	case intents.DetailsToggleSelect:
 		if current := s.current(); current != nil {
-			isChecked := !current.selected
-			current.selected = isChecked
-
-			checkedFile := context.SelectedFile{
-				ChangeId: s.revision.GetChangeId(),
-				CommitId: s.revision.CommitId,
-				File:     current.fileName,
-			}
-			if isChecked {
-				s.context.AddCheckedItem(checkedFile)
-			} else {
-				s.context.RemoveCheckedItem(checkedFile)
-			}
-
+			current.selected = !current.selected
 			s.navigate(1, false)
 		}
 		return nil, true
@@ -314,14 +253,7 @@ func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 	case intents.DetailsSelectFile:
 		for i := range s.files {
 			if s.files[i].fileName == intent.File {
-				if !s.files[i].selected {
-					s.files[i].selected = true
-					s.context.AddCheckedItem(context.SelectedFile{
-						ChangeId: s.revision.GetChangeId(),
-						CommitId: s.revision.CommitId,
-						File:     intent.File,
-					})
-				}
+				s.files[i].selected = true
 				break
 			}
 		}
@@ -330,18 +262,46 @@ func (s *Operation) handleIntentInner(intent intents.Intent) (tea.Cmd, bool) {
 	return nil, false
 }
 
+func (s *Operation) Selection() common.SelectionSnapshot {
+	var snapshot common.SelectionSnapshot
+	current := s.current()
+	if current != nil {
+		snapshot.Highlighted = s.selectedFile(current.fileName)
+	}
+	for _, file := range s.files {
+		if file.selected {
+			snapshot.Checked = append(snapshot.Checked, s.selectedFile(file.fileName))
+		}
+	}
+	return snapshot
+}
+
+func (s *Operation) selectedFile(file string) context.SelectedFile {
+	return context.SelectedFile{
+		ChangeId: s.revision.GetChangeId(),
+		CommitId: s.revision.CommitId,
+		File:     file,
+	}
+}
+
 func (s *Operation) ViewRect(dl *render.DisplayContext, box layout.Box) {
-	background := lipgloss.NewStyle().Background(s.styles.Text.GetBackground())
+	textStyle := common.DefaultPalette.Get("revisions details text")
+	background := lipgloss.NewStyle().Background(textStyle.GetBackground())
 	dl.AddFill(box.R, ' ', background, 0)
 	s.renderIntoRect(dl, box.R)
 }
 
-func (s *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (s *Operation) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	sameCurrent := s.Current.Equal(commit)
+	sameRevision := s.revision.Equal(commit)
+	if sameCurrent && sameRevision {
+		return nil
+	}
 	s.Current = commit
 	if commit == nil {
 		return nil
 	}
-	if s.revision == nil || s.revision.GetChangeId() != commit.GetChangeId() {
+	if !sameRevision {
 		s.revision = commit
 		return s.load(commit.GetChangeId())
 	}
@@ -374,7 +334,8 @@ func (s *Operation) EmbeddedHeight(commit *jj.Commit, pos operations.RenderPosit
 func (s *Operation) renderIntoRect(dl *render.DisplayContext, rect layout.Rectangle) int {
 	if s.Len() == 0 {
 		// Render "No changes" message
-		content := s.styles.Dimmed.Render("No changes")
+		dimmedStyle := common.DefaultPalette.Get("revisions details dimmed")
+		content := dimmedStyle.Render("No changes")
 		dl.AddDraw(layout.Rect(rect.Min.X, rect.Min.Y, rect.Dx(), 1), content, 0)
 		return 1
 	}
@@ -404,19 +365,6 @@ func (s *Operation) renderIntoRect(dl *render.DisplayContext, rect layout.Rectan
 
 func (s *Operation) Name() string {
 	return "details"
-}
-
-func (s *Operation) syncCheckedItems() {
-	s.context.ClearCheckedItems(reflect.TypeFor[context.SelectedFile]())
-	for _, f := range s.files {
-		if f.selected {
-			s.context.AddCheckedItem(context.SelectedFile{
-				ChangeId: s.revision.GetChangeId(),
-				CommitId: s.revision.CommitId,
-				File:     f.fileName,
-			})
-		}
-	}
 }
 
 func (s *Operation) getSelectedFiles(allowVirtualSelection bool) []string {
@@ -458,8 +406,12 @@ func (s *Operation) createListItems(content string, selectedFiles []string) []*i
 		if file == "" {
 			continue
 		}
+		summary, ok := jj.ParseSummaryFile(file)
+		if !ok {
+			continue
+		}
 		var status status
-		switch file[0] {
+		switch summary.Status {
 		case 'A':
 			status = Added
 		case 'D':
@@ -471,18 +423,11 @@ func (s *Operation) createListItems(content string, selectedFiles []string) []*i
 		case 'C':
 			status = Copied
 		}
-		fileName := file[2:]
-
-		actualFileName := fileName
-		if (status == Renamed || status == Copied) && strings.Contains(actualFileName, "{") {
-			re := regexp.MustCompile(`\{[^}]*? => \s*([^}]*?)\s*\}`)
-			actualFileName = path.Clean(re.ReplaceAllString(actualFileName, "$1"))
-		}
 		items = append(items, &item{
 			status:   status,
-			name:     fileName,
-			fileName: actualFileName,
-			selected: slices.ContainsFunc(selectedFiles, func(s string) bool { return s == actualFileName }),
+			name:     summary.Name,
+			fileName: summary.FileName,
+			selected: slices.ContainsFunc(selectedFiles, func(s string) bool { return s == summary.FileName }),
 			conflict: conflicts[index],
 		})
 		index++
@@ -511,24 +456,12 @@ func (s *Operation) load(revision string) tea.Cmd {
 }
 
 func NewOperation(context *context.MainContext, selected *jj.Commit) *Operation {
-	s := styles{
-		Added:    common.DefaultPalette.Get("revisions details added"),
-		Deleted:  common.DefaultPalette.Get("revisions details deleted"),
-		Modified: common.DefaultPalette.Get("revisions details modified"),
-		Renamed:  common.DefaultPalette.Get("revisions details renamed"),
-		Copied:   common.DefaultPalette.Get("revisions details copied"),
-		Selected: common.DefaultPalette.Get("revisions details selected"),
-		Dimmed:   common.DefaultPalette.Get("revisions details dimmed"),
-		Text:     common.DefaultPalette.Get("revisions details text"),
-		Conflict: common.DefaultPalette.Get("revisions details conflict"),
-	}
-
-	l := NewDetailsList(s)
+	l := NewDetailsList()
 	op := &Operation{
 		DetailsList: l,
 		context:     context,
 		revision:    selected,
-		styles:      s,
+		Current:     selected,
 	}
 	return op
 }

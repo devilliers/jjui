@@ -1,14 +1,12 @@
 package describe
 
 import (
-	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/idursun/jjui/internal/jj"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -19,7 +17,7 @@ var (
 	_ operations.Operation         = (*Operation)(nil)
 	_ operations.EmbeddedOperation = (*Operation)(nil)
 	_ common.Editable              = (*Operation)(nil)
-	_ dispatch.ScopeProvider       = (*Operation)(nil)
+	_ common.ScopeProvider         = (*Operation)(nil)
 )
 
 var stashed *stashedDescription = nil
@@ -44,11 +42,11 @@ func (o *Operation) IsFocused() bool {
 	return true
 }
 
-func (o *Operation) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (o *Operation) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeInlineDescribe,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: o,
 		},
 	}
@@ -58,7 +56,7 @@ func (o *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 	if pos != operations.RenderOverDescription {
 		return ""
 	}
-	return o.renderTextarea(80, 0).View()
+	return o.resizeInput(80, 0).View()
 }
 
 func (o *Operation) CanEmbed(_ *jj.Commit, pos operations.RenderPosition) bool {
@@ -69,7 +67,7 @@ func (o *Operation) EmbeddedHeight(commit *jj.Commit, pos operations.RenderPosit
 	if !o.CanEmbed(commit, pos) {
 		return 0
 	}
-	return o.renderTextarea(width, 0).Height()
+	return o.resizeInput(width, 0).Height()
 }
 
 func (o *Operation) Name() string {
@@ -79,11 +77,6 @@ func (o *Operation) Name() string {
 func (o *Operation) Update(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
-	case cursor.BlinkMsg:
-		// ignore cursor blink messages to prevent unnecessary rendering and height
-		// recalculations
-		o.input, cmd = o.input.Update(msg)
-		return cmd
 	case intents.Intent:
 		cmd, _ := o.HandleIntent(msg)
 		return cmd
@@ -98,7 +91,7 @@ func (o *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	switch intent := intent.(type) {
 	case intents.Cancel:
 		unsavedDescription := o.input.Value()
-		if o.originalDesc == "" {
+		if o.originalDesc == "" && unsavedDescription != "" {
 			stashed = &stashedDescription{
 				revision:    o.revision,
 				description: unsavedDescription,
@@ -139,9 +132,18 @@ func (o *Operation) Init() tea.Cmd {
 }
 
 func (o *Operation) ViewRect(dl *render.DisplayContext, box layout.Box) {
-	input := o.renderTextarea(box.R.Dx(), box.R.Dy())
+	o.input = o.resizeInput(box.R.Dx(), box.R.Dy())
+	input := o.input
+
+	selectedStyle := common.DefaultPalette.Get("revisions selected")
+	ds := input.Styles()
+	ds.Focused.Base = selectedStyle.Underline(false).Strikethrough(false).Reverse(false).Blink(false)
+	ds.Focused.CursorLine = ds.Focused.Base
+	input.SetStyles(ds)
+
 	rect := layout.Rect(box.R.Min.X, box.R.Min.Y, box.R.Dx(), input.Height())
 	dl.AddDraw(rect, input.View(), 0)
+	dl.SetCursorInRect(input.Cursor(), rect, 0, 0)
 }
 
 func NewOperation(context *context.MainContext, revision *jj.Commit) *Operation {
@@ -155,18 +157,14 @@ func NewOperation(context *context.MainContext, revision *jj.Commit) *Operation 
 	// clear the stashed description regardless
 	stashed = nil
 
-	selectedStyle := common.DefaultPalette.Get("revisions selected")
-
 	input := textarea.New()
 	input.CharLimit = 0
 	input.Prompt = ""
 	input.ShowLineNumbers = false
 	input.DynamicHeight = true
 	input.MinHeight = 1
-	ds := input.Styles()
-	ds.Focused.Base = selectedStyle.Underline(false).Strikethrough(false).Reverse(false).Blink(false)
-	ds.Focused.CursorLine = ds.Focused.Base
-	input.SetStyles(ds)
+	input.SetVirtualCursor(false)
+
 	input.SetValue(desc)
 	input.Focus()
 
@@ -178,7 +176,7 @@ func NewOperation(context *context.MainContext, revision *jj.Commit) *Operation 
 	}
 }
 
-func (o *Operation) renderTextarea(width, maxHeight int) textarea.Model {
+func (o *Operation) resizeInput(width, maxHeight int) textarea.Model {
 	input := o.input
 	if width <= 0 {
 		width = 80

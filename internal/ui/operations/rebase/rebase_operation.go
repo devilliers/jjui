@@ -9,10 +9,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/jj/source"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -41,19 +41,10 @@ var (
 	}
 )
 
-type styles struct {
-	shortcut     lipgloss.Style
-	dimmed       lipgloss.Style
-	sourceMarker lipgloss.Style
-	targetMarker lipgloss.Style
-	changeId     lipgloss.Style
-	text         lipgloss.Style
-}
-
 var (
-	_ operations.Operation   = (*Operation)(nil)
-	_ common.Focusable       = (*Operation)(nil)
-	_ dispatch.ScopeProvider = (*Operation)(nil)
+	_ operations.Operation = (*Operation)(nil)
+	_ common.Focusable     = (*Operation)(nil)
+	_ common.ScopeProvider = (*Operation)(nil)
 )
 
 type Operation struct {
@@ -65,7 +56,6 @@ type Operation struct {
 	Target         intents.ModeTarget
 	targetName     string
 	highlightedIds []string
-	styles         styles
 	SkipEmptied    bool
 }
 
@@ -79,18 +69,18 @@ func (r *Operation) IsFocused() bool {
 	return true
 }
 
-func (r *Operation) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (r *Operation) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeRebase,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: r,
 		},
 	}
 }
 
 func (r *Operation) Init() tea.Cmd {
-	return nil
+	return r.refreshHighlightedIds()
 }
 
 func (r *Operation) Update(msg tea.Msg) tea.Cmd {
@@ -102,6 +92,12 @@ func (r *Operation) Update(msg tea.Msg) tea.Cmd {
 	case updateHighlightedIdsMsg:
 		r.highlightedIds = msg.ids
 		return nil
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return r.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	case intents.Intent:
 		cmd, _ := r.HandleIntent(msg)
 		return cmd
@@ -123,7 +119,7 @@ func (r *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case intents.RebaseOpenTargetPicker:
-		return common.OpenTargetPicker(), true
+		return common.OpenTargetPicker(source.BookmarkSource{}, source.TagSource{}), true
 	case intents.RebaseToggleSkipEmptied:
 		r.SkipEmptied = !r.SkipEmptied
 		return nil, true
@@ -156,8 +152,21 @@ func rebaseSourceFromIntent(source intents.RebaseSource) Source {
 	}
 }
 
-func (r *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (r *Operation) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	if commit == nil {
+		return nil
+	}
+	if r.To.Equal(commit) {
+		return nil
+	}
 	r.To = commit
+	return r.refreshHighlightedIds()
+}
+
+func (r *Operation) refreshHighlightedIds() tea.Cmd {
+	if r.To == nil {
+		return nil
+	}
 	identifier := fmt.Sprintf("rebase-highlight-%p", r)
 
 	revset := ""
@@ -185,6 +194,11 @@ func (r *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
 }
 
 func (r *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) string {
+	changeIdStyle := common.DefaultPalette.Get("rebase change_id")
+	dimmedStyle := common.DefaultPalette.Get("rebase dimmed")
+	sourceMarkerStyle := common.DefaultPalette.Get("rebase source_marker")
+	targetMarkerStyle := common.DefaultPalette.Get("rebase target_marker")
+
 	if pos == operations.RenderBeforeChangeId {
 		changeId := commit.GetChangeId()
 		marker := ""
@@ -200,7 +214,7 @@ func (r *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 		if r.SkipEmptied && marker != "" {
 			marker += " (skip emptied)"
 		}
-		return r.styles.sourceMarker.Render(marker)
+		return sourceMarkerStyle.Render(marker)
 	}
 	expectedPos := operations.RenderPositionBefore
 	if r.Target == intents.ModeTargetBefore || r.Target == intents.ModeTargetInsert {
@@ -249,27 +263,27 @@ func (r *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 	if r.Target == intents.ModeTargetInsert {
 		return lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			r.styles.targetMarker.Render("<< insert >>"),
+			targetMarkerStyle.Render("<< insert >>"),
 			" ",
-			r.styles.dimmed.Render(source),
-			r.styles.changeId.Render(strings.Join(r.From.GetIds(), " ")),
-			r.styles.dimmed.Render(" between "),
-			r.styles.changeId.Render(r.InsertStart.GetChangeId()),
-			r.styles.dimmed.Render(" and "),
-			r.styles.changeId.Render(r.To.GetChangeId()),
+			dimmedStyle.Render(source),
+			changeIdStyle.Render(strings.Join(r.From.GetIds(), " ")),
+			dimmedStyle.Render(" between "),
+			changeIdStyle.Render(r.InsertStart.GetChangeId()),
+			dimmedStyle.Render(" and "),
+			changeIdStyle.Render(r.To.GetChangeId()),
 		)
 	}
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		r.styles.targetMarker.Render("<< "+ret+" >>"),
-		r.styles.dimmed.Render(" rebase "),
-		r.styles.dimmed.Render(source),
-		r.styles.changeId.Render(strings.Join(r.From.GetIds(), " ")),
-		r.styles.dimmed.Render(" "),
-		r.styles.dimmed.Render(ret),
-		r.styles.dimmed.Render(" "),
-		r.styles.changeId.Render(r.To.GetChangeId()),
+		targetMarkerStyle.Render("<< "+ret+" >>"),
+		dimmedStyle.Render(" rebase "),
+		dimmedStyle.Render(source),
+		changeIdStyle.Render(strings.Join(r.From.GetIds(), " ")),
+		dimmedStyle.Render(" "),
+		dimmedStyle.Render(ret),
+		dimmedStyle.Render(" "),
+		changeIdStyle.Render(r.To.GetChangeId()),
 	)
 }
 
@@ -289,19 +303,12 @@ func (r *Operation) targetArg() string {
 	return ""
 }
 
-func NewOperation(context *context.MainContext, from jj.SelectedRevisions, source Source, target intents.ModeTarget) *Operation {
-	styles := styles{
-		changeId:     common.DefaultPalette.Get("rebase change_id"),
-		shortcut:     common.DefaultPalette.Get("rebase shortcut"),
-		dimmed:       common.DefaultPalette.Get("rebase dimmed"),
-		sourceMarker: common.DefaultPalette.Get("rebase source_marker"),
-		targetMarker: common.DefaultPalette.Get("rebase target_marker"),
-	}
+func NewOperation(context *context.MainContext, from jj.SelectedRevisions, current *jj.Commit, source Source, target intents.ModeTarget) *Operation {
 	return &Operation{
 		context: context,
 		From:    from,
+		To:      current,
 		Source:  source,
 		Target:  target,
-		styles:  styles,
 	}
 }

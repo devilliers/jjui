@@ -11,7 +11,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -46,7 +45,8 @@ var _ operations.Operation = (*Operation)(nil)
 var _ operations.EmbeddedOperation = (*Operation)(nil)
 var _ common.Focusable = (*Operation)(nil)
 var _ common.Overlay = (*Operation)(nil)
-var _ dispatch.ScopeProvider = (*Operation)(nil)
+var _ common.ScopeProvider = (*Operation)(nil)
+var _ common.SelectionProvider = (*Operation)(nil)
 
 type Operation struct {
 	context          *context.MainContext
@@ -56,7 +56,6 @@ type Operation struct {
 	rows             []parser.Row
 	cursor           int
 	target           *jj.Commit
-	styles           styles
 	ensureCursorView bool
 }
 
@@ -82,12 +81,12 @@ func (o *Operation) IsOverlay() bool {
 	return o.mode == selectMode
 }
 
-func (o *Operation) Scopes() []dispatch.Scope {
-	leak := dispatch.LeakGlobal
+func (o *Operation) Scopes() []common.Scope {
+	leak := common.LeakGlobal
 	if o.mode == restoreMode {
-		leak = dispatch.LeakAll
+		leak = common.LeakAll
 	}
-	return []dispatch.Scope{
+	return []common.Scope{
 		{
 			Name:    actions.ScopeEvolog,
 			Leak:    leak,
@@ -104,20 +103,10 @@ func (o *Operation) Init() tea.Cmd {
 	return o.load
 }
 
-func (o *Operation) ViewRect(dl *render.DisplayContext, box layout.Box) {
-	o.renderListToDisplayContext(dl, box.R, o.ensureCursorView)
-}
-
-type styles struct {
-	dimmedStyle   lipgloss.Style
-	commitIdStyle lipgloss.Style
-	changeIdStyle lipgloss.Style
-	markerStyle   lipgloss.Style
-	textStyle     lipgloss.Style
-	selectedStyle lipgloss.Style
-}
-
-func (o *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (o *Operation) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	if o.target.Equal(commit) {
+		return nil
+	}
 	o.target = commit
 	return nil
 }
@@ -128,12 +117,12 @@ func (o *Operation) Update(msg tea.Msg) tea.Cmd {
 		o.rows = msg.rows
 		o.cursor = 0
 		o.ensureCursorView = true
-		return o.updateSelection()
+		return nil
 	case EvologClickedMsg:
 		if msg.Index >= 0 && msg.Index < len(o.rows) {
 			o.cursor = msg.Index
 			o.ensureCursorView = true
-			return o.updateSelection()
+			return nil
 		}
 	case EvologScrollMsg:
 		if msg.Horizontal {
@@ -142,6 +131,12 @@ func (o *Operation) Update(msg tea.Msg) tea.Cmd {
 		o.ensureCursorView = false
 		o.scroll(msg.Delta)
 		return nil
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return o.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	case intents.Intent:
 		cmd, _ := o.HandleIntent(msg)
 		return cmd
@@ -152,7 +147,7 @@ func (o *Operation) Update(msg tea.Msg) tea.Cmd {
 func (o *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	switch intent := intent.(type) {
 	case intents.Quit:
-		return tea.Quit, true
+		return common.Quit(), true
 	case intents.Cancel:
 		return common.Close, true
 	case intents.EvologNavigate:
@@ -166,8 +161,9 @@ func (o *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		}
 		return func() tea.Msg {
 			selectedCommitId := o.getSelectedEvolog().CommitId
-			output, _ := o.context.RunCommandImmediate(jj.Diff(selectedCommitId, ""))
-			return intents.DiffShow{Content: string(output)}
+			args := jj.Diff(selectedCommitId, "")
+			output, _ := o.context.RunCommandImmediate(args)
+			return intents.DiffShow{Content: string(output), Args: args}
 		}, true
 	case intents.EvologRestore:
 		if o.mode != selectMode {
@@ -214,33 +210,39 @@ func (o *Operation) navigate(delta int, page bool) tea.Cmd {
 	}
 
 	o.SetCursor(newCursor)
-	return o.updateSelection()
+	return nil
 }
 
 func (o *Operation) getSelectedEvolog() *jj.Commit {
 	return o.rows[o.cursor].Commit
 }
 
-func (o *Operation) updateSelection() tea.Cmd {
-	if o.rows == nil {
-		return nil
+func (o *Operation) Selection() common.SelectionSnapshot {
+	if len(o.rows) == 0 {
+		return common.SelectionSnapshot{}
 	}
 
 	selected := o.getSelectedEvolog()
-	return o.context.SetSelectedItem(context.SelectedCommit{
-		CommitId: selected.CommitId,
-	})
+	return common.SelectionSnapshot{
+		Highlighted: context.SelectedCommit{CommitId: selected.CommitId},
+	}
 }
 
 func (o *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) string {
 	if o.mode == restoreMode && pos == operations.RenderPositionBefore && o.target != nil && o.target.GetChangeId() == commit.GetChangeId() {
+
+		dimmedStyle := common.DefaultPalette.Get("evolog dimmed")
+		commitIdStyle := common.DefaultPalette.Get("evolog commit_id")
+		changeIdStyle := common.DefaultPalette.Get("evolog change_id")
+		markerStyle := common.DefaultPalette.Get("evolog target_marker")
+
 		selectedCommitId := o.getSelectedEvolog().CommitId
 		return lipgloss.JoinHorizontal(0,
-			o.styles.markerStyle.Render("<< restore >>"),
-			o.styles.dimmedStyle.PaddingLeft(1).Render("restore from "),
-			o.styles.commitIdStyle.Render(selectedCommitId),
-			o.styles.dimmedStyle.Render(" into "),
-			o.styles.changeIdStyle.Render(o.target.GetChangeId()),
+			markerStyle.Render("<< restore >>"),
+			dimmedStyle.PaddingLeft(1).Render("restore from "),
+			commitIdStyle.Render(selectedCommitId),
+			dimmedStyle.Render(" into "),
+			changeIdStyle.Render(o.target.GetChangeId()),
 		)
 	}
 
@@ -291,35 +293,30 @@ func (o *Operation) load() tea.Msg {
 }
 
 func NewOperation(context *context.MainContext, revision *jj.Commit) *Operation {
-	styles := styles{
-		dimmedStyle:   common.DefaultPalette.Get("evolog dimmed"),
-		commitIdStyle: common.DefaultPalette.Get("evolog commit_id"),
-		changeIdStyle: common.DefaultPalette.Get("evolog change_id"),
-		markerStyle:   common.DefaultPalette.Get("evolog target_marker"),
-		textStyle:     common.DefaultPalette.Get("evolog text"),
-		selectedStyle: common.DefaultPalette.Get("evolog selected"),
-	}
 	o := &Operation{
 		context:    context,
 		revision:   revision,
+		target:     revision,
 		rows:       nil,
 		cursor:     0,
-		styles:     styles,
 		dlRenderer: render.NewListRenderer(EvologScrollMsg{}),
 	}
 	return o
 }
 
-func (o *Operation) renderListToDisplayContext(
-	dl *render.DisplayContext,
-	rect layout.Rectangle,
-	ensureCursorVisible bool,
-) int {
+func (o *Operation) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	rect := box.R
+	ensureCursorVisible := o.ensureCursorView
+
 	if len(o.rows) == 0 {
 		content := "loading"
-		dl.AddDraw(layout.Rect(rect.Min.X, rect.Min.Y, rect.Dx(), 1), content, 0)
-		return 1
+		lineRect := layout.Rect(rect.Min.X, rect.Min.Y, rect.Dx(), 1)
+		dl.AddFill(lineRect, ' ', common.DefaultPalette.Get("evolog text"), 0)
+		dl.AddDraw(lineRect, content, 0, render.PreserveBackground())
+		return
 	}
+	textStyle := common.DefaultPalette.Get("evolog text")
+	selectedStyle := common.DefaultPalette.Get("evolog selected")
 
 	totalHeight := 0
 	for _, row := range o.rows {
@@ -334,9 +331,9 @@ func (o *Operation) renderListToDisplayContext(
 	renderItem := func(dl *render.DisplayContext, index int, itemRect layout.Rectangle) {
 		row := o.rows[index]
 		isItemSelected := index == o.cursor
-		styleOverride := o.styles.textStyle
+		styleOverride := textStyle
 		if isItemSelected {
-			styleOverride = o.styles.selectedStyle
+			styleOverride = selectedStyle
 		}
 
 		y := itemRect.Min.Y
@@ -351,11 +348,8 @@ func (o *Operation) renderListToDisplayContext(
 			}
 			lineContent := lipgloss.PlaceHorizontal(itemRect.Dx(), 0, content.String(), lipgloss.WithWhitespaceStyle(styleOverride))
 			lineRect := layout.Rect(itemRect.Min.X, y, itemRect.Dx(), 1)
-			dl.AddDraw(lineRect, lineContent, 0)
-
-			if isItemSelected {
-				dl.AddHighlight(lineRect, o.styles.selectedStyle, 1)
-			}
+			dl.AddFill(lineRect, ' ', styleOverride, 0)
+			dl.AddDraw(lineRect, lineContent, 0, render.PreserveBackground())
 			y++
 		}
 	}
@@ -377,7 +371,6 @@ func (o *Operation) renderListToDisplayContext(
 	)
 	o.dlRenderer.RegisterScroll(dl, viewRect)
 
-	return height
 }
 
 func (o *Operation) scroll(delta int) {

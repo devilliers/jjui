@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -115,6 +117,40 @@ func (c *Config) Load(data, baseDir string) error {
 	if _, err := toml.Decode(data, overlay); err != nil {
 		return err
 	}
+	overlayActions := make([]ActionConfig, 0, len(overlay.Actions))
+	actionBindings := make([]BindingConfig, 0, len(overlay.Actions))
+	for i, action := range overlay.Actions {
+		overlayActions = append(overlayActions, ActionConfig{
+			Name: action.Name,
+			Lua:  action.Lua,
+			Args: action.Args,
+		})
+
+		hasKey := len(action.Key) > 0
+		hasSeq := len(action.Seq) > 0
+		if !hasKey && !hasSeq {
+			continue
+		}
+		if hasKey && hasSeq {
+			return fmt.Errorf("actions[%d]: must set exactly one of key or seq", i)
+		}
+		if strings.TrimSpace(action.Scope) == "" {
+			return fmt.Errorf("actions[%d]: scope is required when key or seq is set", i)
+		}
+
+		binding := BindingConfig{
+			Action: action.Name,
+			Desc:   action.Desc,
+			Scope:  action.Scope,
+		}
+		if hasKey {
+			binding.Key = action.Key
+		}
+		if hasSeq {
+			binding.Seq = action.Seq
+		}
+		actionBindings = append(actionBindings, binding)
+	}
 
 	// If a custom bindings profile is specified, use it as the base instead of built-in defaults
 	if metadata.IsDefined("bindings_profile") && c.BindingsProfile != "" && c.BindingsProfile != ":builtin" {
@@ -129,10 +165,14 @@ func (c *Config) Load(data, baseDir string) error {
 	}
 
 	if metadata.IsDefined("actions") {
-		c.Actions = append(baseActions, overlay.Actions...)
+		c.Actions = append(baseActions, overlayActions...)
+	}
+	if metadata.IsDefined("actions") && len(actionBindings) > 0 && !metadata.IsDefined("bindings") {
+		c.Bindings = append(baseBindings, actionBindings...)
 	}
 	if metadata.IsDefined("bindings") {
-		c.Bindings = append(baseBindings, overlay.Bindings...)
+		overlayBindings := append(actionBindings, overlay.Bindings...)
+		c.Bindings = append(baseBindings, overlayBindings...)
 	}
 
 	return c.ValidateBindingsAndActions()
@@ -232,4 +272,102 @@ func LoadTheme(name string, base map[string]Color) (map[string]Color, error) {
 		return nil, err
 	}
 	return loadTheme(data, base)
+}
+
+type LuaTypesInstallResult struct {
+	TypesPath    string
+	LuaRCPath    string
+	LuaRCCreated bool
+}
+
+func SetupLuaTypes() (*LuaTypesInstallResult, error) {
+	configDir := GetConfigDir()
+	if configDir == "" {
+		return nil, fmt.Errorf("could not determine config directory")
+	}
+	data, err := configFS.ReadFile("default/types.lua")
+	if err != nil {
+		return nil, fmt.Errorf("embedded types.lua not found: %w", err)
+	}
+	dest := filepath.Join(configDir, "types.lua")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		return nil, err
+	}
+
+	luaRCPath := filepath.Join(configDir, ".luarc.json")
+	created, err := ensureLuaRC(luaRCPath, dest)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LuaTypesInstallResult{
+		TypesPath:    dest,
+		LuaRCPath:    luaRCPath,
+		LuaRCCreated: created,
+	}, nil
+}
+
+func ensureLuaRC(luaRCPath, typesPath string) (bool, error) {
+	if _, err := os.Stat(luaRCPath); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+
+	content, err := json.MarshalIndent(map[string]any{
+		"workspace": map[string]any{
+			"library": []string{typesPath},
+		},
+	}, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	content = append(content, '\n')
+
+	if err := os.WriteFile(luaRCPath, content, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ResolveTheme loads the full color map for the given background mode.
+// It layers the embedded default theme, optional user theme, jj VCS colors,
+// and inline [ui.colors] overrides in the correct order.
+func ResolveTheme(isDark bool, jjColors map[string]Color) (map[string]Color, error) {
+	defaultThemeName := "default_light"
+	if isDark {
+		defaultThemeName = "default_dark"
+	}
+
+	theme, err := LoadEmbeddedTheme(defaultThemeName)
+	if err != nil {
+		return nil, fmt.Errorf("loading default theme %q: %w", defaultThemeName, err)
+	}
+
+	userThemeName := Current.UI.Theme.Light
+	if isDark {
+		userThemeName = Current.UI.Theme.Dark
+	}
+
+	if userThemeName != "" {
+		theme, err = LoadTheme(userThemeName, theme)
+		if err != nil {
+			return nil, fmt.Errorf("loading user theme %q: %w", userThemeName, err)
+		}
+	}
+
+	// Layer jj VCS colors
+	if jjColors != nil {
+		maps.Copy(theme, jjColors)
+	}
+
+	// Layer inline [ui.colors] overrides
+	if Current.UI.Colors != nil {
+		maps.Copy(theme, Current.UI.Colors)
+	}
+
+	return theme, nil
 }

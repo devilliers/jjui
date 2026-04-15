@@ -5,7 +5,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -50,11 +49,11 @@ func (m *CommandHistoryModel) Init() tea.Cmd {
 	return nil
 }
 
-func (m *CommandHistoryModel) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (m *CommandHistoryModel) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeCommandHistory,
-			Leak:    dispatch.LeakGlobal,
+			Leak:    common.LeakGlobal,
 			Handler: m,
 		},
 	}
@@ -109,7 +108,12 @@ func (m *CommandHistoryModel) ViewRect(dl *render.DisplayContext, box layout.Box
 	for _, item := range m.renderedItems(maxWidth, area.Dy()) {
 		y -= item.h
 		rect := layout.Rect(area.Max.X-item.w, y, item.w, item.h)
-		dl.AddDraw(rect, item.content, render.ZOverlay)
+		surfaceStyle := common.DefaultPalette.Get("flash text")
+		if item.index == m.selectedIndex {
+			surfaceStyle = flashBackgroundStyle(m.items[item.index].Err)
+		}
+		dl.AddFill(rect, ' ', surfaceStyle, render.ZOverlay)
+		dl.AddDraw(rect, item.content, render.ZOverlay, render.PreserveBackground())
 		dl.AddInteraction(rect, selectHistoryItemMsg{index: item.index}, render.InteractionClick, render.ZOverlay)
 	}
 }

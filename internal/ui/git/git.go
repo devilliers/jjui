@@ -12,7 +12,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -69,23 +68,6 @@ func (m itemScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 	return m
 }
 
-type menuStyles struct {
-	title    lipgloss.Style
-	shortcut lipgloss.Style
-	dimmed   lipgloss.Style
-	selected lipgloss.Style
-	matched  lipgloss.Style
-	text     lipgloss.Style
-	border   lipgloss.Style
-}
-
-type remoteStyles struct {
-	promptStyle   lipgloss.Style
-	textStyle     lipgloss.Style
-	selectedStyle lipgloss.Style
-	noRemoteStyle lipgloss.Style
-}
-
 type filterState int
 
 const (
@@ -112,8 +94,6 @@ type Model struct {
 	revisions           jj.SelectedRevisions
 	remoteNames         []string
 	selectedRemoteIdx   int
-	menuStyles          menuStyles
-	remoteStyles        remoteStyles
 	title               string
 }
 
@@ -125,25 +105,25 @@ func (m *Model) IsEditing() bool {
 	return m.filterState == filterEditing
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
+func (m *Model) Scopes() []common.Scope {
 	if m.IsEditing() {
-		return []dispatch.Scope{
+		return []common.Scope{
 			{
 				Name:    actions.ScopeGit + ".filter",
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 			{
 				Name:    actions.ScopeGit,
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 		}
 	}
-	return []dispatch.Scope{
+	return []common.Scope{
 		{
 			Name:    actions.ScopeGit,
-			Leak:    dispatch.LeakGlobal,
+			Leak:    common.LeakGlobal,
 			Handler: m,
 		},
 	}
@@ -322,13 +302,12 @@ func (m *Model) executeDefaultForFilter(kind intents.GitFilterKind) tea.Cmd {
 	return nil
 }
 
-func (m *Model) filtered(filter string) tea.Cmd {
-	m.categoryFilter = filter
-	m.applyFilters(true)
-	return nil
-}
-
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	menuTitleStyle := common.DefaultPalette.Get("git menu title")
+	menuTextStyle := common.DefaultPalette.Get("git menu text")
+	menuMatchedStyle := common.DefaultPalette.Get("git menu matched")
+	borderStyle := common.DefaultPalette.GetBorder("git menu border", lipgloss.NormalBorder())
+
 	pw, ph := box.R.Dx(), box.R.Dy()
 	contentWidth := max(min(pw, 80)-4, 0)
 	contentHeight := max(min(ph, 40)-4, 0)
@@ -344,15 +323,15 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	if contentBox.R.Dx() <= 0 || contentBox.R.Dy() <= 0 {
 		return
 	}
-	dl.AddFill(contentBox.R, ' ', m.menuStyles.text, render.ZMenuContent)
+	dl.AddFill(contentBox.R, ' ', menuTextStyle, render.ZMenuContent)
 
 	borderBase := lipgloss.NewStyle().Width(contentBox.R.Dx()).Height(contentBox.R.Dy()).Render("")
-	dl.AddDraw(frame.R, m.menuStyles.border.Render(borderBase), render.ZMenuBorder)
+	dl.AddDraw(frame.R, borderStyle.Render(borderBase), render.ZMenuBorder)
 
 	titleBox, contentBox := contentBox.CutTop(1)
 	dl.
 		Text(titleBox.R.Min.X, titleBox.R.Min.Y, render.ZMenuContent).
-		Styled(m.title, m.menuStyles.title).
+		Styled(m.title, menuTitleStyle).
 		Done()
 
 	_, contentBox = contentBox.CutTop(1)
@@ -362,8 +341,15 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	_, contentBox = contentBox.CutTop(1)
 	filterBox, contentBox := contentBox.CutTop(1)
 	if m.filterState == filterEditing {
+		gfis := m.filterInput.Styles()
+		gfis.Focused.Prompt = menuMatchedStyle.PaddingLeft(1)
+		gfis.Focused.Text = menuTextStyle
+		gfis.Blurred.Prompt = menuMatchedStyle.PaddingLeft(1)
+		gfis.Blurred.Text = menuTextStyle
+		m.filterInput.SetStyles(gfis)
 		m.filterInput.SetWidth(max(contentBox.R.Dx()-2, 0))
 		dl.AddDraw(filterBox.R, m.filterInput.View(), render.ZMenuContent)
+		dl.SetCursorInRect(m.filterInput.Cursor(), filterBox.R, 0, 0)
 	} else {
 		m.renderFilterView(dl, filterBox)
 	}
@@ -377,22 +363,30 @@ func (m *Model) renderRemotes(dl *render.DisplayContext, lineBox layout.Box) {
 		return
 	}
 
+	remotePromptStyle := common.DefaultPalette.Get("git title")
+	menuTextStyle := common.DefaultPalette.Get("git menu text")
+	remoteTextStyle := common.DefaultPalette.Get("git dimmed")
+	remoteSelectedStyle := common.DefaultPalette.Get("git menu selected")
+	noRemoteStyle := common.DefaultPalette.Get("git error")
+
+	dl.AddFill(lineBox.R, ' ', menuTextStyle, render.ZMenuContent)
+
 	// Render above menu content
 	tb := dl.Text(lineBox.R.Min.X, lineBox.R.Min.Y, render.ZMenuContent+1).
-		Styled(" ", m.menuStyles.text).
-		Styled("Remotes: ", m.remoteStyles.promptStyle)
+		Styled(" ", menuTextStyle).
+		Styled("Remotes: ", remotePromptStyle)
 
 	if len(m.remoteNames) == 0 {
-		tb.Styled("NO REMOTE FOUND", m.remoteStyles.noRemoteStyle).Done()
+		tb.Styled("NO REMOTE FOUND", noRemoteStyle).Done()
 		return
 	}
 
 	for idx, remoteName := range m.remoteNames {
-		style := m.remoteStyles.textStyle
+		style := remoteTextStyle
 		if idx == m.selectedRemoteIdx {
-			style = m.remoteStyles.selectedStyle
+			style = remoteSelectedStyle
 		}
-		tb.Clickable(remoteName, style, SelectRemoteMsg{Index: idx}).Styled(" ", m.menuStyles.text)
+		tb.Clickable(remoteName, style, SelectRemoteMsg{Index: idx}).Styled(" ", menuTextStyle)
 	}
 
 	tb.Done()
@@ -413,20 +407,11 @@ func loadRemoteNames(c context.CommandRunner) []string {
 func NewModel(c *context.MainContext, revisions jj.SelectedRevisions) *Model {
 	remotes := loadRemoteNames(c)
 
-	remoteStyles := remoteStyles{
-		promptStyle:   common.DefaultPalette.Get("title"),
-		textStyle:     common.DefaultPalette.Get("dimmed"),
-		selectedStyle: common.DefaultPalette.Get("menu selected"),
-		noRemoteStyle: common.DefaultPalette.Get("error"),
-	}
-
 	m := &Model{
 		context:           c,
 		revisions:         revisions,
 		remoteNames:       remotes,
 		selectedRemoteIdx: 0,
-		menuStyles:        createMenuStyles("git"),
-		remoteStyles:      remoteStyles,
 		listRenderer:      render.NewListRenderer(itemScrollMsg{}),
 		title:             "Git Operations",
 	}
@@ -437,30 +422,10 @@ func NewModel(c *context.MainContext, revisions jj.SelectedRevisions) *Model {
 	m.filteredItems = items
 	m.filterInput = textinput.New()
 	m.filterInput.Prompt = "Filter: "
-	gfis := m.filterInput.Styles()
-	gfis.Focused.Prompt = m.menuStyles.matched.PaddingLeft(1)
-	gfis.Focused.Text = m.menuStyles.text
-	gfis.Blurred.Prompt = m.menuStyles.matched.PaddingLeft(1)
-	gfis.Blurred.Text = m.menuStyles.text
-	m.filterInput.SetStyles(gfis)
+	m.filterInput.SetVirtualCursor(false)
 	m.applyFilters(true)
 
 	return m
-}
-
-func createMenuStyles(prefix string) menuStyles {
-	if prefix != "" {
-		prefix += " "
-	}
-	return menuStyles{
-		title:    common.DefaultPalette.Get(prefix+"menu title").Padding(0, 1, 0, 1),
-		selected: common.DefaultPalette.Get(prefix + "menu selected"),
-		matched:  common.DefaultPalette.Get(prefix + "menu matched"),
-		dimmed:   common.DefaultPalette.Get(prefix + "menu dimmed"),
-		shortcut: common.DefaultPalette.Get(prefix + "menu shortcut"),
-		text:     common.DefaultPalette.Get(prefix + "menu text"),
-		border:   common.DefaultPalette.GetBorder(prefix+"menu border", lipgloss.NormalBorder()),
-	}
 }
 
 func (m *Model) visibleItems() []item {
@@ -556,14 +521,16 @@ func (m *Model) renderFilterView(dl *render.DisplayContext, box layout.Box) {
 		return
 	}
 	width := box.R.Dx()
-	filterStyle := m.menuStyles.text.PaddingLeft(1)
-	filterValueStyle := m.menuStyles.matched
+	menuTextStyle := common.DefaultPalette.Get("git menu text")
+	menuMatchedStyle := common.DefaultPalette.Get("git menu matched")
+	filterStyle := menuTextStyle.PaddingLeft(1)
+	filterValueStyle := menuMatchedStyle
 
 	filterView := lipgloss.JoinHorizontal(0, filterStyle.Render("Showing "), filterValueStyle.Render("all"))
 	if m.categoryFilter != "" {
 		filterView = lipgloss.JoinHorizontal(0, filterStyle.Render("Showing only "), filterValueStyle.Render(m.categoryFilter))
 	}
-	dl.AddDraw(box.R, m.menuStyles.text.Width(width).Render(filterView), render.ZMenuContent)
+	dl.AddDraw(box.R, menuTextStyle.Width(width).Render(filterView), render.ZMenuContent)
 }
 
 func (m *Model) renderList(dl *render.DisplayContext, listBox layout.Box) {
@@ -591,7 +558,7 @@ func (m *Model) renderList(dl *render.DisplayContext, listBox layout.Box) {
 			if index < 0 || index >= itemCount {
 				return
 			}
-			renderItem(dl, rect, listWidth, m.menuStyles, m.categoryFilter != "", m.cursor, index, items[index])
+			renderItem(dl, rect, listWidth, m.categoryFilter != "", m.cursor, index, items[index])
 		},
 		func(index int, _ tea.Mouse) tea.Msg { return itemClickMsg{Index: index} },
 	)
@@ -599,7 +566,7 @@ func (m *Model) renderList(dl *render.DisplayContext, listBox layout.Box) {
 	m.ensureCursorVisible = false
 }
 
-func renderItem(dl *render.DisplayContext, rect layout.Rectangle, width int, styles menuStyles, showShortcuts bool, cursor int, index int, item item) {
+func renderItem(dl *render.DisplayContext, rect layout.Rectangle, width int, showShortcuts bool, cursor int, index int, item item) {
 	var (
 		title string
 		desc  string
@@ -622,29 +589,29 @@ func renderItem(dl *render.DisplayContext, rect layout.Rectangle, width int, sty
 		desc = desc[:width-1] + "…"
 	}
 
-	titleStyle := styles.text
-	descStyle := styles.dimmed
-	shortcutStyle := styles.shortcut
+	textStyle := common.DefaultPalette.Get("git menu text")
+	descStyle := common.DefaultPalette.Get("git menu dimmed")
+	shortcutStyle := common.DefaultPalette.Get("git menu shortcut")
 
 	if index == cursor {
-		titleStyle = styles.selected
-		descStyle = styles.selected
-		shortcutStyle = shortcutStyle.Background(styles.selected.GetBackground())
+		textStyle = common.DefaultPalette.Get("git menu selected text")
+		descStyle = common.DefaultPalette.Get("git menu selected dimmed")
+		shortcutStyle = common.DefaultPalette.Get("git menu selected shortcut")
 	}
 
 	titleLine := ""
 	if shortcut != "" {
-		titleLine = lipgloss.JoinHorizontal(0, shortcutStyle.PaddingLeft(1).Render(shortcut), titleStyle.PaddingLeft(1).Render(title))
+		titleLine = lipgloss.JoinHorizontal(0, shortcutStyle.PaddingLeft(1).Render(shortcut), textStyle.PaddingLeft(1).Render(title))
 	} else {
-		titleLine = titleStyle.PaddingLeft(1).Render(title)
+		titleLine = textStyle.PaddingLeft(1).Render(title)
 	}
-	titleLine = lipgloss.PlaceHorizontal(width+2, 0, titleLine, lipgloss.WithWhitespaceStyle(titleStyle))
+	titleLine = lipgloss.PlaceHorizontal(width+2, 0, titleLine, lipgloss.WithWhitespaceStyle(textStyle))
 
 	descStyle = descStyle.PaddingLeft(1).PaddingRight(1).Width(width + 2)
 	descLine := descStyle.Render(desc)
-	descLine = lipgloss.PlaceHorizontal(width+2, 0, descLine, lipgloss.WithWhitespaceStyle(titleStyle))
+	descLine = lipgloss.PlaceHorizontal(width+2, 0, descLine, lipgloss.WithWhitespaceStyle(textStyle))
 
-	spacerLine := styles.text.Width(width + 2).Render("")
+	spacerLine := textStyle.Width(width + 2).Render("")
 	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, descLine, spacerLine)
 	if content == "" {
 		return

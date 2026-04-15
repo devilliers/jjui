@@ -2,6 +2,7 @@ package exec_process
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,7 +14,25 @@ import (
 	"github.com/idursun/jjui/internal/jj"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
+	shellwords "github.com/mattn/go-shellwords"
 )
+
+// jjBin mirrors the resolution logic in context/command_runner.go.
+var jjBin = func() string {
+	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+		if strings.HasPrefix(dir, "/nix/store/") {
+			continue
+		}
+		candidate := dir + "/jj"
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	if path, err := exec.LookPath("jj"); err == nil {
+		return path
+	}
+	return "jj"
+}()
 
 func ExecMsgFromLine(prompt string, line string) common.ExecMsg {
 	line = strings.TrimSpace(line)
@@ -35,9 +54,17 @@ func ExecLine(ctx *context.MainContext, msg common.ExecMsg) tea.Cmd {
 	replacements := ctx.CreateReplacements()
 	switch msg.Mode {
 	case common.ExecJJ:
-		args := strings.Fields(msg.Line)
+		args, err := shellwords.Parse(msg.Line)
+		if err != nil {
+			return func() tea.Msg {
+				return common.ExecProcessCompletedMsg{
+					Err: fmt.Errorf("parsing command line: %w", err),
+					Msg: msg,
+				}
+			}
+		}
 		args = jj.TemplatedArgs(args, replacements)
-		return execProgram("jj", args, ctx.Location, nil, msg)
+		return execProgram(jjBin, args, ctx.Location, nil, msg)
 	case common.ExecShell:
 		// user input is run via `$SHELL -c` to support user specifying command lines
 		// that have pipes (eg, to a pager) or redirection.

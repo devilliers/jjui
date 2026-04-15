@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -156,6 +157,23 @@ key = "esc"
 	})
 }
 
+func TestLoadDefaultConfig_SetsWindowTitleByDefault(t *testing.T) {
+	cfg := loadDefaultConfig()
+
+	assert.True(t, cfg.UI.SetWindowTitle)
+}
+
+func TestLoad_UISetWindowTitleCanBeDisabled(t *testing.T) {
+	cfg := loadDefaultConfig()
+
+	require.NoError(t, cfg.Load(`
+[ui]
+set_window_title = false
+`, ""))
+
+	assert.False(t, cfg.UI.SetWindowTitle)
+}
+
 func TestLoad_SeqBindingDoesNotInheritStaleKey(t *testing.T) {
 	cfg := &Config{
 		Bindings: []BindingConfig{
@@ -309,4 +327,61 @@ auto_refresh_interval = 30
 	assert.Equal(t, 99, cfg2.Limit)
 	// auto_refresh_interval: only in global, survives
 	assert.Equal(t, 5, cfg2.UI.AutoRefreshInterval)
+}
+
+func TestSetupLuaTypes_WritesTypesAndLuaRC(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("JJUI_CONFIG_DIR", configDir)
+
+	result, err := SetupLuaTypes()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, filepath.Join(configDir, "types.lua"), result.TypesPath)
+	assert.Equal(t, filepath.Join(configDir, ".luarc.json"), result.LuaRCPath)
+	assert.True(t, result.LuaRCCreated)
+
+	typesData, err := os.ReadFile(result.TypesPath)
+	require.NoError(t, err)
+	embeddedTypes, err := configFS.ReadFile("default/types.lua")
+	require.NoError(t, err)
+	assert.Equal(t, string(embeddedTypes), string(typesData))
+
+	luaRCData, err := os.ReadFile(result.LuaRCPath)
+	require.NoError(t, err)
+
+	var luaRC struct {
+		Workspace struct {
+			Library []string `json:"library"`
+		} `json:"workspace"`
+	}
+	require.NoError(t, json.Unmarshal(luaRCData, &luaRC))
+	assert.Equal(t, []string{result.TypesPath}, luaRC.Workspace.Library)
+}
+
+func TestSetupLuaTypes_PreservesExistingLuaRC(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("JJUI_CONFIG_DIR", configDir)
+
+	luaRCPath := filepath.Join(configDir, ".luarc.json")
+	existingLuaRC := []byte("{\"workspace\":{\"library\":[\"/tmp/custom-types.lua\"]}}\n")
+	require.NoError(t, os.WriteFile(luaRCPath, existingLuaRC, 0o644))
+
+	typesPath := filepath.Join(configDir, "types.lua")
+	require.NoError(t, os.WriteFile(typesPath, []byte("stale"), 0o644))
+
+	result, err := SetupLuaTypes()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.LuaRCCreated)
+
+	luaRCData, err := os.ReadFile(luaRCPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(existingLuaRC), string(luaRCData))
+
+	typesData, err := os.ReadFile(typesPath)
+	require.NoError(t, err)
+	embeddedTypes, err := configFS.ReadFile("default/types.lua")
+	require.NoError(t, err)
+	assert.Equal(t, string(embeddedTypes), string(typesData))
 }

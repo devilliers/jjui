@@ -22,12 +22,15 @@ const (
 	ScopeRedo                = "redo"
 	ScopeRevisions           = "revisions"
 	ScopeAbandon             = "revisions.abandon"
+	ScopeAbsorb              = "revisions.absorb"
 	ScopeAceJump             = "revisions.ace_jump"
 	ScopeDetails             = "revisions.details"
 	ScopeDetailsConfirmation = "revisions.details.confirmation"
+	ScopeDiffRange           = "revisions.diff_range"
 	ScopeDuplicate           = "revisions.duplicate"
 	ScopeEvolog              = "revisions.evolog"
 	ScopeInlineDescribe      = "revisions.inline_describe"
+	ScopeNewBetween          = "revisions.new_between"
 	ScopeQuickSearch         = "revisions.quick_search"
 	ScopeQuickSearchInput    = "revisions.quick_search.input"
 	ScopeRebase              = "revisions.rebase"
@@ -41,6 +44,7 @@ const (
 	ScopeUi                  = "ui"
 	ScopeUiPreview           = "ui.preview"
 	ScopeUndo                = "undo"
+	ScopeWorkspace           = "workspace"
 )
 
 func ResolveIntent(scope string, action keybindings.Action, args map[string]any) (intents.Intent, bool) {
@@ -112,10 +116,14 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.DiffScroll{Kind: intents.DiffMoveBottom}, true
 		case keybindings.Action("diff.move_top"):
 			return intents.DiffScroll{Kind: intents.DiffMoveTop}, true
+		case keybindings.Action("diff.next_file"):
+			return intents.DiffFileNavigate{Delta: 1}, true
 		case keybindings.Action("diff.page_down"):
 			return intents.DiffScroll{Kind: intents.DiffPageDown}, true
 		case keybindings.Action("diff.page_up"):
 			return intents.DiffScroll{Kind: intents.DiffPageUp}, true
+		case keybindings.Action("diff.prev_file"):
+			return intents.DiffFileNavigate{Delta: -1}, true
 		case keybindings.Action("diff.right"):
 			return intents.DiffScrollHorizontal{Kind: intents.DiffScrollRight}, true
 		case keybindings.Action("diff.scroll_down"):
@@ -124,6 +132,8 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.DiffScroll{Kind: intents.DiffScrollUp}, true
 		case keybindings.Action("diff.show"):
 			return intents.DiffShow{Content: actionargs.StringArg(args, "content", "")}, true
+		case keybindings.Action("diff.target_picker"):
+			return intents.DiffOpenTargetPicker{}, true
 		case keybindings.Action("diff.toggle_wrap"):
 			return intents.DiffToggleWrap{}, true
 		}
@@ -257,8 +267,6 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 		}
 	case ScopeRevisions:
 		switch action {
-		case keybindings.Action("revisions.absorb"):
-			return intents.Absorb{}, true
 		case keybindings.Action("revisions.ace_jump"):
 			return intents.StartAceJump{}, true
 		case keybindings.Action("revisions.apply"):
@@ -293,20 +301,26 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.StartNew{}, true
 		case keybindings.Action("revisions.open_abandon"):
 			return intents.OpenAbandon{}, true
+		case keybindings.Action("revisions.open_absorb"):
+			return intents.OpenAbsorb{}, true
 		case keybindings.Action("revisions.open_details"):
 			return intents.OpenDetails{}, true
+		case keybindings.Action("revisions.open_diff_range"):
+			return intents.OpenDiffRange{}, true
 		case keybindings.Action("revisions.open_duplicate"):
 			return intents.OpenDuplicate{}, true
 		case keybindings.Action("revisions.open_evolog"):
 			return intents.OpenEvolog{}, true
 		case keybindings.Action("revisions.open_inline_describe"):
 			return intents.OpenInlineDescribe{}, true
+		case keybindings.Action("revisions.open_new_between"):
+			return intents.OpenNewBetween{}, true
 		case keybindings.Action("revisions.open_rebase"):
 			return intents.OpenRebase{}, true
 		case keybindings.Action("revisions.open_revert"):
 			return intents.OpenRevert{}, true
 		case keybindings.Action("revisions.open_set_bookmark"):
-			return intents.OpenSetBookmark{}, true
+			return intents.OpenSetBookmark{Value: actionargs.StringArg(args, "value", "")}, true
 		case keybindings.Action("revisions.open_set_parents"):
 			return intents.OpenSetParents{}, true
 		case keybindings.Action("revisions.open_squash"):
@@ -340,6 +354,21 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.AbandonSelectDescendants{}, true
 		case keybindings.Action("revisions.abandon.toggle_select"):
 			return intents.AbandonToggleSelect{}, true
+		}
+	case ScopeAbsorb:
+		switch action {
+		case keybindings.Action("revisions.absorb.ace_jump"):
+			return intents.StartAceJump{}, true
+		case keybindings.Action("revisions.absorb.apply"):
+			return intents.Apply{}, true
+		case keybindings.Action("revisions.absorb.cancel"):
+			return intents.Cancel{}, true
+		case keybindings.Action("revisions.absorb.jump_to_working_copy"):
+			return intents.Navigate{Target: intents.TargetWorkingCopy}, true
+		case keybindings.Action("revisions.absorb.select_descendants"):
+			return intents.AbsorbSelectDescendants{}, true
+		case keybindings.Action("revisions.absorb.toggle_select"):
+			return intents.AbsorbToggleSelect{}, true
 		}
 	case ScopeAceJump:
 		switch action {
@@ -396,6 +425,17 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 		case keybindings.Action("revisions.details.confirmation.prev"):
 			return intents.OptionSelect{Delta: -1}, true
 		}
+	case ScopeDiffRange:
+		switch action {
+		case keybindings.Action("revisions.diff_range.apply"):
+			return intents.Apply{}, true
+		case keybindings.Action("revisions.diff_range.cancel"):
+			return intents.Cancel{}, true
+		case keybindings.Action("revisions.diff_range.swap"):
+			return intents.DiffRangeSwap{}, true
+		case keybindings.Action("revisions.diff_range.target_picker"):
+			return intents.DiffRangeOpenTargetPicker{Target: enumArgDiffArgTarget(args, "target")}, true
+		}
 	case ScopeDuplicate:
 		switch action {
 		case keybindings.Action("revisions.duplicate.ace_jump"):
@@ -446,6 +486,15 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.InlineDescribeAccept{Force: true}, true
 		case keybindings.Action("revisions.inline_describe.new_line"):
 			return intents.InlineDescribeNewLine{}, true
+		}
+	case ScopeNewBetween:
+		switch action {
+		case keybindings.Action("revisions.new_between.apply"):
+			return intents.Apply{}, true
+		case keybindings.Action("revisions.new_between.cancel"):
+			return intents.Cancel{}, true
+		case keybindings.Action("revisions.new_between.toggle_insert_before"):
+			return intents.NewBetweenToggleInsertBefore{}, true
 		}
 	case ScopeQuickSearch:
 		switch action {
@@ -601,6 +650,8 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 		switch action {
 		case keybindings.Action("ui.cancel"):
 			return intents.Cancel{}, true
+		case keybindings.Action("ui.change_theme"):
+			return intents.ChangeTheme{Name: actionargs.StringArg(args, "name", "")}, true
 		case keybindings.Action("ui.exec_jj"):
 			return intents.ExecJJ{}, true
 		case keybindings.Action("ui.exec_shell"):
@@ -625,6 +676,8 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.Edit{Clear: true}, true
 		case keybindings.Action("ui.open_undo"):
 			return intents.Undo{}, true
+		case keybindings.Action("ui.open_workspace"):
+			return intents.WorkspaceOpen{}, true
 		case keybindings.Action("ui.preview_expand"):
 			return intents.PreviewExpand{}, true
 		case keybindings.Action("ui.preview_half_page_down"):
@@ -664,8 +717,52 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 		case keybindings.Action("undo.prev"):
 			return intents.OptionSelect{Delta: -1}, true
 		}
+	case ScopeWorkspace:
+		switch action {
+		case keybindings.Action("workspace.add"):
+			return intents.WorkspaceAdd{}, true
+		case keybindings.Action("workspace.close"):
+			return intents.WorkspaceClose{}, true
+		case keybindings.Action("workspace.forget"):
+			return intents.WorkspaceForget{}, true
+		case keybindings.Action("workspace.move_down"):
+			return intents.WorkspaceNavigate{Delta: 1}, true
+		case keybindings.Action("workspace.move_up"):
+			return intents.WorkspaceNavigate{Delta: -1}, true
+		case keybindings.Action("workspace.page_down"):
+			return intents.WorkspaceNavigate{Delta: 1, IsPage: true}, true
+		case keybindings.Action("workspace.page_up"):
+			return intents.WorkspaceNavigate{Delta: -1, IsPage: true}, true
+		case keybindings.Action("workspace.switch_workspace"):
+			return intents.WorkspaceSwitch{}, true
+		case keybindings.Action("workspace.update_stale"):
+			return intents.WorkspaceUpdateStale{}, true
+		}
 	}
 	return nil, false
+}
+
+func enumArgDiffArgTarget(args map[string]any, name string) intents.DiffArgTarget {
+	var zero intents.DiffArgTarget
+	if args == nil {
+		return zero
+	}
+	v, ok := args[name]
+	if !ok {
+		return zero
+	}
+	s, ok := v.(string)
+	if !ok {
+		return zero
+	}
+	switch s {
+	case "to":
+		return intents.DiffArgTargetTo
+	case "from":
+		return intents.DiffArgTargetFrom
+	default:
+		return zero
+	}
 }
 
 func enumArgModeTarget(args map[string]any, name string) intents.ModeTarget {

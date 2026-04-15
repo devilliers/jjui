@@ -26,6 +26,7 @@ type DisplayContextRenderer struct {
 // itemRenderer is a helper for rendering individual revision items
 type itemRenderer struct {
 	renderer        *DisplayContextRenderer
+	dl              *render.DisplayContext
 	row             parser.Row
 	isHighlighted   bool
 	op              operations.Operation
@@ -85,13 +86,9 @@ func (ir *itemRenderer) renderSegmentForLine(tb *render.TextBuilder, segment *sc
 }
 
 // NewDisplayContextRenderer creates a new DisplayContext-based renderer
-func NewDisplayContextRenderer(textStyle, dimmedStyle, selectedStyle, matchedStyle lipgloss.Style) *DisplayContextRenderer {
+func NewDisplayContextRenderer() *DisplayContextRenderer {
 	return &DisplayContextRenderer{
-		listRenderer:  render.NewListRenderer(ViewportScrollMsg{}),
-		textStyle:     textStyle,
-		dimmedStyle:   dimmedStyle,
-		selectedStyle: selectedStyle,
-		matchedStyle:  matchedStyle,
+		listRenderer: render.NewListRenderer(ViewportScrollMsg{}),
 	}
 }
 
@@ -146,6 +143,66 @@ func (r *DisplayContextRenderer) Render(
 		}
 	}
 
+	if operation != nil && cursor >= 0 && cursor < len(items) && viewRect.R.Dy() > 0 {
+		item := items[cursor]
+		if item.Commit != nil {
+			contentWidth := r.itemContentWidth(item, viewRect.R.Dx())
+			embeddedHeight := r.embeddedHeight(operation, item.Commit, operations.RenderPositionAfter, contentWidth)
+			embeddedOffset := 0
+
+			beforeHeight := 0
+			if before := operation.Render(item.Commit, operations.RenderPositionBefore); before != "" {
+				beforeHeight = renderedHeight(before)
+			}
+
+			if embeddedHeight > 0 {
+				// Bias the viewport upward so embedded after-views get useful space.
+				embeddedOffset = beforeHeight + len(item.Lines)
+				for i, line := range item.Lines {
+					if line.Flags&parser.Elided == parser.Elided {
+						embeddedOffset = beforeHeight + i
+						break
+					}
+				}
+			} else if embeddedHeight = r.embeddedHeight(operation, item.Commit, operations.RenderOverDescription, contentWidth); embeddedHeight > 0 {
+				// Bias the viewport upward for inline description editors too.
+				embeddedOffset = beforeHeight + len(item.Lines)
+				for i, line := range item.Lines {
+					descriptionLine := line.Flags&parser.Highlightable == parser.Highlightable &&
+						line.Flags&parser.Revision != parser.Revision
+					if descriptionLine {
+						embeddedOffset = beforeHeight + i
+						break
+					}
+				}
+			}
+
+			if embeddedHeight > 0 {
+				cursorStart := 0
+				totalLines := 0
+				for i := range items {
+					if i == cursor {
+						cursorStart = totalLines
+					}
+					totalLines += measure(i)
+				}
+
+				viewHeight := viewRect.R.Dy()
+				desiredHeight := min(embeddedHeight, max(viewHeight-embeddedOffset, 0))
+				if desiredHeight > 0 {
+					currentStart := render.ClampStartLine(r.listRenderer.StartLine, viewHeight, totalLines)
+					if currentStart <= cursorStart {
+						embeddedStart := cursorStart + embeddedOffset
+						start := max(currentStart, embeddedStart+desiredHeight-viewHeight)
+						// Keep the selected revision visible while embedded models scroll internally.
+						r.listRenderer.StartLine = render.ClampStartLine(min(start, cursorStart), viewHeight, totalLines)
+						ensureCursorVisible = false
+					}
+				}
+			}
+		}
+	}
+
 	// Use the generic list renderer
 	r.listRenderer.Render(
 		dl,
@@ -175,7 +232,7 @@ func (r *DisplayContextRenderer) addHighlights(
 
 	// Account for operation "before" lines
 	overlayHeight := 0
-	if operation != nil {
+	if operation != nil && item.Commit != nil {
 		before := operation.Render(item.Commit, operations.RenderPositionBefore)
 		if before != "" {
 			y += strings.Count(before, "\n") + 1
@@ -221,14 +278,15 @@ func (r *DisplayContextRenderer) calculateItemHeight(
 	// Base height from the item's lines
 	height := len(item.Lines)
 
-	// Add operation height if item is selected and operation exists
-	if isSelected && operation != nil {
-		// Count lines in before section
+	if operation != nil && item.Commit != nil {
 		before := operation.Render(item.Commit, operations.RenderPositionBefore)
 		if before != "" {
 			height += renderedHeight(before)
 		}
+	}
 
+	// Add operation height if item is selected and operation exists
+	if isSelected && operation != nil {
 		contentWidth := r.itemContentWidth(item, viewWidth)
 
 		overlayHeight := r.overlayHeight(operation, item, contentWidth)
@@ -260,6 +318,7 @@ func (r *DisplayContextRenderer) renderItemToDisplayContext(
 	// Create an item renderer for this item
 	ir := itemRenderer{
 		renderer:        r,
+		dl:              dl,
 		row:             item,
 		isHighlighted:   isSelected,
 		op:              operation,
@@ -273,7 +332,7 @@ func (r *DisplayContextRenderer) renderItemToDisplayContext(
 	}
 
 	// Handle operation rendering for before section
-	if isSelected && operation != nil {
+	if operation != nil && item.Commit != nil {
 		before := operation.Render(item.Commit, operations.RenderPositionBefore)
 		if before != "" {
 			// Render before section
@@ -396,9 +455,13 @@ func (r *DisplayContextRenderer) renderItemToDisplayContext(
 		}
 
 		lineRect := layout.Rect(rect.Min.X, y, rect.Dx(), 1)
-		dl.AddFill(lineRect, ' ', lipgloss.NewStyle(), 0)
+		fillStyle := r.textStyle
+		if isSelected && line.Flags&parser.Highlightable == parser.Highlightable {
+			fillStyle = r.selectedStyle
+		}
+		dl.AddFill(lineRect, ' ', fillStyle, 0)
 		tb := dl.Text(lineRect.Min.X, lineRect.Min.Y, 0)
-		ir.renderLine(tb, line)
+		ir.renderLine(tb, line, lineRect.Min.X, lineRect.Min.Y)
 		tb.Done()
 		y++
 	}
@@ -553,25 +616,35 @@ func renderedHeight(content string) int {
 }
 
 // renderLine writes a line into a TextBuilder (helper for itemRenderer)
-func (ir *itemRenderer) renderLine(tb *render.TextBuilder, line *parser.GraphRowLine) {
+func (ir *itemRenderer) renderLine(tb *render.TextBuilder, line *parser.GraphRowLine, x, y int) {
+	currentX := 0
+	write := func(content string) {
+		tb.Write(content)
+		currentX += render.StringWidth(content)
+	}
+	writeStyled := func(content string, style lipgloss.Style) {
+		tb.Styled(content, style)
+		currentX += render.StringWidth(content)
+	}
+
 	// Only highlight lines with the Highlightable flag
 	lineIsHighlightable := line.Flags&parser.Highlightable == parser.Highlightable
 
 	// Render gutter (no tracer support for now)
 	for _, segment := range line.Gutter.Segments {
 		style := segment.Style.Inherit(ir.renderer.textStyle)
-		tb.Styled(segment.Text, style)
+		writeStyled(segment.Text, style)
 	}
 
 	// Add checkbox and operation content before ChangeID
 	if line.Flags&parser.Revision == parser.Revision {
 		if ir.isChecked {
-			tb.Styled("✓ ", ir.renderer.selectedStyle)
+			writeStyled("✓ ", ir.renderer.selectedStyle)
 		}
 		if ir.op != nil {
 			beforeChangeID := ir.op.Render(ir.row.Commit, operations.RenderBeforeChangeId)
 			if beforeChangeID != "" {
-				tb.Write(beforeChangeID)
+				write(beforeChangeID)
 			}
 		}
 	}
@@ -589,7 +662,12 @@ func (ir *itemRenderer) renderLine(tb *render.TextBuilder, line *parser.GraphRow
 	beforeCommitIDRendered := false
 	for _, segment := range line.Segments {
 		if beforeCommitID != "" && !beforeCommitIDRendered && strings.HasPrefix(segment.Text, ir.row.Commit.CommitId) {
-			tb.Write(beforeCommitID)
+			if cursorProvider, ok := ir.op.(operations.InlineCursorProvider); ok {
+				if cursor := cursorProvider.InlineCursor(ir.row.Commit, operations.RenderBeforeCommitId); cursor != nil {
+					ir.dl.SetCursorAt(cursor, x+currentX, y)
+				}
+			}
+			write(beforeCommitID)
 			beforeCommitIDRendered = true
 		}
 
@@ -597,20 +675,26 @@ func (ir *itemRenderer) renderLine(tb *render.TextBuilder, line *parser.GraphRow
 		if ir.segmentRenderer != nil {
 			rendered := ir.segmentRenderer.RenderSegment(style, segment, ir.row)
 			if rendered != "" {
-				tb.Write(rendered)
+				write(rendered)
 				continue
 			}
 		}
 		ir.renderSegmentForLine(tb, segment, lineIsHighlightable)
+		currentX += render.StringWidth(segment.Text)
 	}
 	if beforeCommitID != "" && !beforeCommitIDRendered {
 		// Add a space before blinking cursor for aesthetics
-		tb.Write(" " + beforeCommitID)
+		if cursorProvider, ok := ir.op.(operations.InlineCursorProvider); ok {
+			if cursor := cursorProvider.InlineCursor(ir.row.Commit, operations.RenderBeforeCommitId); cursor != nil {
+				ir.dl.SetCursorAt(cursor, x+currentX+render.StringWidth(" "), y)
+			}
+		}
+		write(" " + beforeCommitID)
 	}
 
 	// Add affected marker
 	if line.Flags&parser.Revision == parser.Revision && ir.row.IsAffected {
-		tb.Styled(" (affected by last operation)", ir.renderer.dimmedStyle)
+		writeStyled(" (affected by last operation)", ir.renderer.dimmedStyle)
 	}
 }
 
@@ -621,7 +705,7 @@ func (r *DisplayContextRenderer) renderOperationLine(
 	gutter parser.GraphGutter,
 	line string,
 ) {
-	dl.AddFill(rect, ' ', lipgloss.NewStyle(), 0)
+	dl.AddFill(rect, ' ', r.textStyle, 0)
 	tb := dl.Text(rect.Min.X, rect.Min.Y, 0)
 	// Render gutter with text style (matching original behavior)
 	for _, segment := range gutter.Segments {

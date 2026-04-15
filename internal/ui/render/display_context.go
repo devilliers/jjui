@@ -16,6 +16,7 @@ type DisplayContext struct {
 	draws        []drawOp
 	effects      []effectOp
 	interactions []interactionOp
+	cursor       *tea.Cursor
 	orderCounter int
 }
 
@@ -39,12 +40,19 @@ func (dl *DisplayContext) AddBackdrop(rect layout.Rectangle, z int) {
 }
 
 // AddDraw adds a Draw to the display context.
-func (dl *DisplayContext) AddDraw(rect layout.Rectangle, content string, z int) {
+func (dl *DisplayContext) AddDraw(rect layout.Rectangle, content string, z int, opts ...DrawOption) {
+	var options DrawOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
 	dl.draws = append(dl.draws, drawOp{
 		Draw: Draw{
 			Rect:    rect,
 			Content: content,
 			Z:       z,
+			Options: options,
 		},
 		order: dl.nextOrder(),
 	})
@@ -114,6 +122,41 @@ func (dl *DisplayContext) AddInteractionFn(rect layout.Rectangle, fn func(tea.Mo
 	})
 }
 
+// SetCursor sets the real terminal cursor for the current frame.
+func (dl *DisplayContext) SetCursor(cursor *tea.Cursor) {
+	if cursor == nil {
+		dl.cursor = nil
+		return
+	}
+	cursorCopy := *cursor
+	dl.cursor = &cursorCopy
+}
+
+// SetCursorAt sets the frame cursor after offsetting it to an absolute position.
+func (dl *DisplayContext) SetCursorAt(cursor *tea.Cursor, x, y int) {
+	if cursor == nil {
+		return
+	}
+	cursorCopy := *cursor
+	cursorCopy.Position.X += x
+	cursorCopy.Position.Y += y
+	dl.cursor = &cursorCopy
+}
+
+// SetCursorInRect sets the frame cursor relative to a rectangle origin plus any local offsets.
+func (dl *DisplayContext) SetCursorInRect(cursor *tea.Cursor, rect layout.Rectangle, dx, dy int) {
+	dl.SetCursorAt(cursor, rect.Min.X+dx, rect.Min.Y+dy)
+}
+
+// Cursor returns the real terminal cursor for the current frame.
+func (dl *DisplayContext) Cursor() *tea.Cursor {
+	if dl.cursor == nil {
+		return nil
+	}
+	cursorCopy := *dl.cursor
+	return &cursorCopy
+}
+
 // Render executes all operations in the display context to the given screen.
 // Order of execution:
 // 1. Draw sorted by Z-index (low to high)
@@ -149,10 +192,63 @@ func (dl *DisplayContext) Render(buf uv.Screen) {
 
 	for _, op := range ops {
 		if op.isDraw {
-			uv.NewStyledString(op.draw.Content).Draw(buf, op.draw.Rect)
+			drawStyledString(buf, op.draw)
 			continue
 		}
 		op.effect.Apply(buf)
+	}
+}
+
+func drawStyledString(buf uv.Screen, draw Draw) {
+	if !draw.Options.PreserveBackground {
+		uv.NewStyledString(draw.Content).Draw(buf, draw.Rect)
+		return
+	}
+
+	tmp := NewScreenBuffer(draw.Rect.Dx(), draw.Rect.Dy())
+	uv.NewStyledString(draw.Content).Draw(tmp, layout.Rect(0, 0, draw.Rect.Dx(), draw.Rect.Dy()))
+	mergeScreenRegion(buf, tmp, draw.Rect)
+}
+
+func mergeScreenRegion(dst uv.Screen, src uv.Screen, dstRect layout.Rectangle) {
+	srcBounds := src.Bounds()
+	dstBounds := dst.Bounds()
+	for y := 0; y < srcBounds.Dy(); y++ {
+		for x := 0; x < srcBounds.Dx(); {
+			srcCell := src.CellAt(x, y)
+			if srcCell == nil {
+				x++
+				continue
+			}
+			if srcCell.Width == 0 {
+				x++
+				continue
+			}
+
+			dstX := dstRect.Min.X + x
+			dstY := dstRect.Min.Y + y
+			if dstX < dstBounds.Min.X || dstX >= dstBounds.Max.X || dstY < dstBounds.Min.Y || dstY >= dstBounds.Max.Y {
+				if srcCell.Width > 1 {
+					x += srcCell.Width
+				} else {
+					x++
+				}
+				continue
+			}
+
+			dstCell := dst.CellAt(dstX, dstY)
+			merged := srcCell.Clone()
+			if dstCell != nil && merged.Style.Bg == nil {
+				merged.Style.Bg = dstCell.Style.Bg
+			}
+			dst.SetCell(dstX, dstY, merged)
+
+			if srcCell.Width > 1 {
+				x += srcCell.Width
+			} else {
+				x++
+			}
+		}
 	}
 }
 

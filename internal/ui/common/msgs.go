@@ -2,15 +2,18 @@ package common
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/jj/source"
 )
 
 type (
 	CloseViewMsg struct {
 		Applied bool
 	}
-	AutoRefreshMsg struct{}
-	RefreshMsg     struct {
+	AutoRefreshMsg  struct{}
+	ThemeChangedMsg struct{}
+	RefreshMsg      struct {
 		SelectedRevision string
 		KeepSelections   bool
 	}
@@ -50,25 +53,30 @@ type (
 	ShowInputMsg struct {
 		Title  string
 		Prompt string
+		Value  string
 	}
 	ExecProcessCompletedMsg struct {
 		Err error
 		Msg ExecMsg
 	}
 	FileSearchMsg struct {
-		Revset       string
-		PreviewShown bool
-		Commit       *jj.Commit
-		RawFileOut   []byte // raw output from `jj file list`
+		Revset     string
+		Commit     *jj.Commit
+		RawFileOut []byte // raw output from `jj file list`
 	}
-	ShowPreview     bool
+	ShowPreview     struct{}
 	RunLuaScriptMsg struct {
-		Script string
+		Script       string
+		CompletionID string
 	}
 	DispatchActionMsg struct {
-		Action  string
-		Args    map[string]any
-		BuiltIn bool
+		Action       string
+		Args         map[string]any
+		BuiltIn      bool
+		CompletionID string
+	}
+	ActionCompletedMsg struct {
+		ID string
 	}
 	TogglePasswordMsg struct {
 		Prompt   string
@@ -78,7 +86,10 @@ type (
 		Operation any
 	}
 	StartAceJumpMsg     struct{}
-	OpenTargetPickerMsg struct{}
+	OpenTargetPickerMsg struct {
+		Payload any // additional information to carry with the target picker
+		Sources []source.Source
+	}
 )
 
 type State int
@@ -90,6 +101,18 @@ const (
 
 func Close() tea.Msg {
 	return CloseViewMsg{}
+}
+
+func Quit() tea.Cmd {
+	// bubbletea does not automatically reset the mode 2031 subscription since we
+	// enable that ourselves. Reset it explicitly so color change notifications
+	// aren't still emitted to the terminal after jjui exits.
+	return tea.Sequence(tea.Raw(ansi.ResetModeLightDark), tea.Quit)
+}
+
+func Suspend() tea.Cmd {
+	// disable mode 2031 push notifications before suspending
+	return tea.Sequence(tea.Raw(ansi.ResetModeLightDark), tea.Suspend)
 }
 
 func CloseApplied() tea.Msg {
@@ -108,9 +131,15 @@ func StartAceJump() tea.Cmd {
 	}
 }
 
-func OpenTargetPicker() tea.Cmd {
+func OpenTargetPicker(sources ...source.Source) tea.Cmd {
 	return func() tea.Msg {
-		return OpenTargetPickerMsg{}
+		return OpenTargetPickerMsg{Sources: sources}
+	}
+}
+
+func OpenTargetPickerWithPayload(payload any, sources ...source.Source) tea.Cmd {
+	return func() tea.Msg {
+		return OpenTargetPickerMsg{Payload: payload, Sources: sources}
 	}
 }
 
@@ -140,13 +169,12 @@ func UpdateRevSet(revset string) tea.Cmd {
 	}
 }
 
-func FileSearch(revset string, preview bool, commit *jj.Commit, rawFileOut []byte) tea.Cmd {
+func FileSearch(revset string, commit *jj.Commit, rawFileOut []byte) tea.Cmd {
 	return func() tea.Msg {
 		return FileSearchMsg{
-			Commit:       commit,
-			RawFileOut:   rawFileOut,
-			Revset:       revset,
-			PreviewShown: preview,
+			Commit:     commit,
+			RawFileOut: rawFileOut,
+			Revset:     revset,
 		}
 	}
 }

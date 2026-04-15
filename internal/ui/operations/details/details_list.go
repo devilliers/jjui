@@ -3,6 +3,7 @@ package details
 import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
 )
@@ -28,17 +29,15 @@ type DetailsList struct {
 	listRenderer     *render.ListRenderer
 	selectedHint     string
 	unselectedHint   string
-	styles           styles
 	ensureCursorView bool
 }
 
-func NewDetailsList(styles styles) *DetailsList {
+func NewDetailsList() *DetailsList {
 	d := &DetailsList{
 		files:          []*item{},
 		cursor:         -1,
 		selectedHint:   "",
 		unselectedHint: "",
-		styles:         styles,
 	}
 	d.listRenderer = render.NewListRenderer(FileListScrollMsg{})
 	return d
@@ -111,29 +110,23 @@ func (d *DetailsList) RenderFileList(dl *render.DisplayContext, viewRect layout.
 		return 1
 	}
 
+	textStyle := common.DefaultPalette.Get("revisions details text")
+
 	// Render function - renders each visible item
 	renderItem := func(dl *render.DisplayContext, index int, rect layout.Rectangle) {
 		item := d.files[index]
 		isSelected := index == d.cursor
 
-		baseStyle := d.getStatusStyle(item.status)
-		if isSelected {
-			baseStyle = baseStyle.Bold(true).Background(d.styles.Selected.GetBackground())
-		} else {
-			baseStyle = baseStyle.Background(d.styles.Text.GetBackground())
+		baseStyle := d.getStatusStyle(item.status, isSelected)
+		if !isSelected {
+			baseStyle = baseStyle.Background(textStyle.GetBackground())
 		}
 		background := lipgloss.NewStyle().Background(baseStyle.GetBackground())
 		dl.AddFill(rect, ' ', background, 0)
 
 		tb := dl.Text(rect.Min.X, rect.Min.Y, 0)
-		d.renderItemContent(tb, item, index, baseStyle)
+		d.renderItemContent(tb, item, index, baseStyle, isSelected)
 		tb.Done()
-
-		// Add highlight for selected item
-		if isSelected {
-			style := d.getStatusStyle(item.status).Bold(true).Background(d.styles.Selected.GetBackground())
-			dl.AddHighlight(rect, style, 1)
-		}
 	}
 
 	clickMsg := func(index int, mouse tea.Mouse) render.ClickMessage {
@@ -158,7 +151,7 @@ func (d *DetailsList) RenderFileList(dl *render.DisplayContext, viewRect layout.
 }
 
 // renderItemContent renders a single item to a string
-func (d *DetailsList) renderItemContent(tb *render.TextBuilder, item *item, index int, style lipgloss.Style) {
+func (d *DetailsList) renderItemContent(tb *render.TextBuilder, item *item, index int, style lipgloss.Style, selected bool) {
 	// Build title with checkbox
 	title := item.Title()
 	if item.selected {
@@ -169,38 +162,57 @@ func (d *DetailsList) renderItemContent(tb *render.TextBuilder, item *item, inde
 
 	tb.Styled(title, style.PaddingRight(1))
 
+	dimmedStyle := common.DefaultPalette.Get("revisions details dimmed")
+	conflictStyle := common.DefaultPalette.Get("revisions details conflict")
+	selectedDimmedStyle := common.DefaultPalette.Get("revisions details selected dimmed")
+
 	// Add conflict marker
 	if item.conflict {
-		tb.Styled("conflict ", d.styles.Conflict)
+		conflictMarkerStyle := conflictStyle
+		if selected {
+			conflictMarkerStyle = common.DefaultPalette.Get("revisions details selected conflict")
+		}
+		tb.Styled("conflict ", conflictMarkerStyle)
 	}
 
 	// Add hint
 	hint := ""
 	if d.showHint() {
 		hint = d.unselectedHint
-		if item.selected || (index == d.cursor) {
+		if item.selected || (!d.hasSelectedItems() && index == d.cursor) {
 			hint = d.selectedHint
 		}
 	}
 	if hint != "" {
-		tb.Styled(hint, d.styles.Dimmed)
+		hintStyle := dimmedStyle
+		if selected {
+			hintStyle = selectedDimmedStyle
+		}
+		tb.Styled(hint, hintStyle)
 	}
 }
 
-func (d *DetailsList) getStatusStyle(s status) lipgloss.Style {
+func (d *DetailsList) getStatusStyle(s status, selected bool) lipgloss.Style {
+	prefix := "revisions details"
+	if selected {
+		prefix += " selected"
+	}
 	switch s {
 	case Added:
-		return d.styles.Added
+		return common.DefaultPalette.Get(prefix + " added")
 	case Deleted:
-		return d.styles.Deleted
+		return common.DefaultPalette.Get(prefix + " deleted")
 	case Modified:
-		return d.styles.Modified
+		return common.DefaultPalette.Get(prefix + " modified")
 	case Renamed:
-		return d.styles.Renamed
+		return common.DefaultPalette.Get(prefix + " renamed")
 	case Copied:
-		return d.styles.Copied
+		return common.DefaultPalette.Get(prefix + " copied")
 	default:
-		return d.styles.Text
+		if selected {
+			return common.DefaultPalette.Get("revisions details selected")
+		}
+		return common.DefaultPalette.Get("revisions details text")
 	}
 }
 
@@ -229,4 +241,13 @@ func (d *DetailsList) Len() int {
 
 func (d *DetailsList) showHint() bool {
 	return d.selectedHint != "" || d.unselectedHint != ""
+}
+
+func (d *DetailsList) hasSelectedItems() bool {
+	for _, item := range d.files {
+		if item.selected {
+			return true
+		}
+	}
+	return false
 }

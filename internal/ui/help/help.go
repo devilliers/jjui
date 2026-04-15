@@ -9,7 +9,6 @@ import (
 	"github.com/idursun/jjui/internal/config"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -31,9 +30,9 @@ var scopeDisplayNames = map[string]string{
 	"revisions.duplicate":            "Duplicate",
 	"revisions.abandon":              "Abandon",
 	"revisions.set_parents":          "Set Parents",
-	"revisions.details":              "File Details",
-	"revisions.details.confirmation": "File Details Confirmation",
-	"revisions.evolog":               "Evolution Log",
+	"revisions.details":              "Details",
+	"revisions.details.confirmation": "Details Confirmation",
+	"revisions.evolog":               "Evolog",
 	"revisions.inline_describe":      "Inline Describe",
 	"revisions.set_bookmark":         "Set Bookmark",
 	"revisions.target_picker":        "Target Picker",
@@ -44,12 +43,12 @@ var scopeDisplayNames = map[string]string{
 	"bookmarks.filter":               "Bookmarks Filter",
 	"git":                            "Git",
 	"git.filter":                     "Git Filter",
-	"oplog":                          "Operation Log",
-	"oplog.quick_search":             "Operation Log Search",
-	"diff":                           "Diff Viewer",
+	"oplog":                          "Oplog",
+	"oplog.quick_search":             "Oplog Search",
+	"diff":                           "Diff",
 	"undo":                           "Undo",
 	"redo":                           "Redo",
-	"revset":                         "Revset Editor",
+	"revset":                         "Revset",
 	"command_history":                "Command History",
 	"file_search":                    "File Search",
 	"status.input":                   "Status Input",
@@ -94,19 +93,9 @@ var scopeOrder = []string{
 	"ui.preview",
 }
 
-type styles struct {
-	border   lipgloss.Style
-	title    lipgloss.Style
-	heading  lipgloss.Style
-	shortcut lipgloss.Style
-	desc     lipgloss.Style
-	dimmed   lipgloss.Style
-}
-
 type Model struct {
 	groups    []ScopeGroup
 	scroll    int
-	styles    styles
 	input     textinput.Model
 	filtering bool
 	filtered  []ScopeGroup
@@ -129,25 +118,25 @@ func (m *Model) IsFocused() bool {
 	return m.filtering
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
+func (m *Model) Scopes() []common.Scope {
 	if m.IsEditing() {
-		return []dispatch.Scope{
+		return []common.Scope{
 			{
 				Name:    actions.ScopeHelp + ".filter",
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 			{
 				Name:    actions.ScopeHelp,
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 		}
 	}
-	return []dispatch.Scope{
+	return []common.Scope{
 		{
 			Name:    actions.ScopeHelp,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: m,
 		},
 	}
@@ -236,6 +225,20 @@ func (m *Model) applyFilter() {
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	borderStyle := common.DefaultPalette.GetBorder("help border", lipgloss.NormalBorder()).Padding(0)
+	titleStyle := common.DefaultPalette.Get("help title")
+	headingStyle := titleStyle
+	shortcutStyle := common.DefaultPalette.Get("help shortcut")
+	dimmedStyle := common.DefaultPalette.Get("help dimmed")
+	descStyle := common.DefaultPalette.Get("help desc").Inherit(dimmedStyle)
+
+	inputStyles := m.input.Styles()
+	inputStyles.Focused.Text = shortcutStyle
+	inputStyles.Focused.Placeholder = dimmedStyle
+	inputStyles.Blurred.Text = shortcutStyle
+	inputStyles.Blurred.Placeholder = dimmedStyle
+	m.input.SetStyles(inputStyles)
+
 	pw, ph := box.R.Dx(), box.R.Dy()
 	contentWidth := max(min(pw, 90)-4, 0)
 	contentHeight := max(min(ph, 50)-4, 0)
@@ -251,18 +254,20 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	if contentBox.R.Dx() <= 0 || contentBox.R.Dy() <= 0 {
 		return
 	}
-	dl.AddFill(contentBox.R, ' ', m.styles.dimmed, render.ZMenuContent)
+	surfaceRect := contentBox.R
+	dl.AddFill(surfaceRect, ' ', dimmedStyle, render.ZMenuContent)
 
 	borderBase := lipgloss.NewStyle().Width(contentBox.R.Dx()).Height(contentBox.R.Dy()).Render("")
-	dl.AddDraw(frame.R, m.styles.border.Render(borderBase), render.ZMenuBorder)
+	dl.AddDraw(frame.R, borderStyle.Render(borderBase), render.ZMenuBorder)
 
 	titleBox, contentBox := contentBox.CutTop(1)
-	title := m.styles.title.Render("  Keybindings  ")
+	title := titleStyle.Render("  Keybindings  ")
 	dl.AddDraw(titleBox.R, title, render.ZMenuContent)
 
 	filterBox, contentBox := contentBox.CutTop(1)
 	filterLine := "  " + m.input.View()
 	dl.AddDraw(filterBox.R, filterLine, render.ZMenuContent)
+	dl.SetCursorInRect(m.input.Cursor(), filterBox.R, render.StringWidth("  "), 0)
 
 	_, contentBox = contentBox.CutTop(1)
 
@@ -270,7 +275,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	if m.filtered != nil {
 		groups = m.filtered
 	}
-	lines := m.renderGroups(groups, contentBox.R.Dx())
+	lines := m.renderGroups(groups, contentBox.R.Dx(), headingStyle, shortcutStyle, descStyle)
 
 	// clamp scroll
 	maxScroll := max(0, len(lines)-contentBox.R.Dy())
@@ -289,24 +294,25 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 		rect := layout.Rect(contentBox.R.Min.X, y, contentBox.R.Dx(), 1)
 		dl.AddDraw(rect, line, render.ZMenuContent)
 	}
+	dl.AddPaint(surfaceRect, dimmedStyle, render.ZMenuContent)
 }
 
-func (m *Model) renderGroups(groups []ScopeGroup, width int) []string {
+func (m *Model) renderGroups(groups []ScopeGroup, width int, headingStyle, shortcutStyle, descStyle lipgloss.Style) []string {
 	var lines []string
 	for i, group := range groups {
 		if i > 0 {
 			lines = append(lines, "")
 		}
-		header := m.styles.heading.Width(width).Render("  " + group.Name + " ")
+		header := headingStyle.Width(width).Render("  " + group.Name + " ")
 		lines = append(lines, header)
 
-		entryLines := m.renderEntries(group.Entries, width)
+		entryLines := m.renderEntries(group.Entries, width, shortcutStyle, descStyle)
 		lines = append(lines, entryLines...)
 	}
 	return lines
 }
 
-func (m *Model) renderEntries(entries []Entry, width int) []string {
+func (m *Model) renderEntries(entries []Entry, width int, shortcutStyle, descStyle lipgloss.Style) []string {
 	maxLabelWidth := 0
 	for _, e := range entries {
 		if w := render.StringWidth(e.Label); w > maxLabelWidth {
@@ -328,8 +334,8 @@ func (m *Model) renderEntries(entries []Entry, width int) []string {
 				continue
 			}
 			e := entries[idx]
-			label := m.styles.shortcut.Width(maxLabelWidth + 1).Render(e.Label)
-			desc := m.styles.desc.Render(e.Desc)
+			label := shortcutStyle.Width(maxLabelWidth + 1).Render(e.Label)
+			desc := descStyle.Render(e.Desc)
 			entry := "  " + label + " " + desc
 			entryWidth := render.StringWidth(entry)
 			if col < numCols-1 {
@@ -345,30 +351,14 @@ func (m *Model) renderEntries(entries []Entry, width int) []string {
 func New() *Model {
 	groups := buildGroups(config.Current.Bindings)
 
-	palette := common.DefaultPalette
-	s := styles{
-		border:   palette.GetBorder("help border", lipgloss.NormalBorder()).Padding(0),
-		title:    palette.Get("help title"),
-		heading:  palette.Get("help title"),
-		shortcut: palette.Get("help shortcut"),
-		desc:     palette.Get("help desc").Inherit(palette.Get("help dimmed")),
-		dimmed:   palette.Get("help dimmed"),
-	}
-
 	ti := textinput.New()
 	ti.Placeholder = "search"
 	ti.Prompt = "/ "
 	ti.SetWidth(40)
-	ts := ti.Styles()
-	ts.Focused.Text = s.shortcut
-	ts.Focused.Placeholder = s.dimmed
-	ts.Blurred.Text = s.shortcut
-	ts.Blurred.Placeholder = s.dimmed
-	ti.SetStyles(ts)
+	ti.SetVirtualCursor(false)
 
 	return &Model{
 		groups: groups,
-		styles: s,
 		input:  ti,
 	}
 }
@@ -404,7 +394,7 @@ func buildGroups(bindings []config.BindingConfig) []ScopeGroup {
 		if len(entries) == 0 {
 			continue
 		}
-		name := scopeDisplayName(scope)
+		name := ScopeDisplayName(scope)
 		groups = append(groups, ScopeGroup{Name: name, Entries: entries})
 	}
 
@@ -417,7 +407,7 @@ func buildGroups(bindings []config.BindingConfig) []ScopeGroup {
 		if len(entries) == 0 {
 			continue
 		}
-		name := scopeDisplayName(scope)
+		name := ScopeDisplayName(scope)
 		groups = append(groups, ScopeGroup{Name: name, Entries: entries})
 	}
 
@@ -452,7 +442,7 @@ func bindingsToEntries(bindings []config.BindingConfig) []Entry {
 	return entries
 }
 
-func scopeDisplayName(scope string) string {
+func ScopeDisplayName(scope string) string {
 	if name, ok := scopeDisplayNames[scope]; ok {
 		return name
 	}

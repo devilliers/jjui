@@ -11,20 +11,12 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/fuzzy_search"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
 	"github.com/idursun/jjui/internal/ui/render"
 	"github.com/sahilm/fuzzy"
-)
-
-type ItemKind int
-
-const (
-	KindBookmark ItemKind = iota
-	KindTag
 )
 
 const (
@@ -35,16 +27,16 @@ const (
 
 type Item struct {
 	Name string
-	Kind ItemKind
+	Kind source.Kind
 }
 
 var (
-	_ operations.Operation   = (*Model)(nil)
-	_ dispatch.ScopeProvider = (*Model)(nil)
-	_ dispatch.ScopeHandler  = (*Model)(nil)
-	_ common.Focusable       = (*Model)(nil)
-	_ common.Editable        = (*Model)(nil)
-	_ common.Overlay         = (*Model)(nil)
+	_ operations.Operation = (*Model)(nil)
+	_ common.ScopeProvider = (*Model)(nil)
+	_ common.ScopeHandler  = (*Model)(nil)
+	_ common.Focusable     = (*Model)(nil)
+	_ common.Editable      = (*Model)(nil)
+	_ common.Overlay       = (*Model)(nil)
 )
 
 type Model struct {
@@ -53,18 +45,11 @@ type Model struct {
 	input               textinput.Model
 	cursor              int
 	matches             fuzzy.Matches
-	styles              styles
 	fzfSource           *fuzzy_search.RefinedSource
 	listRenderer        *render.ListRenderer
 	ensureCursorVisible bool
-}
-
-type styles struct {
-	bookmarkPill lipgloss.Style
-	selected     lipgloss.Style
-	dimmed       lipgloss.Style
-	matchStyle   lipgloss.Style
-	border       lipgloss.Style
+	payload             any
+	sources             []source.Source
 }
 
 type itemsLoadedMsg struct {
@@ -87,8 +72,9 @@ func (m itemScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 }
 
 type TargetSelectedMsg struct {
-	Target string
-	Force  bool
+	Target  string
+	Force   bool
+	Payload any
 }
 
 type TargetPickerCancelMsg struct{}
@@ -101,44 +87,31 @@ func (m *Model) Name() string { return "target_picker" }
 
 func (m *Model) Render(_ *jj.Commit, _ operations.RenderPosition) string { return "" }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (m *Model) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeTargetPicker,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: m,
 		},
 	}
 }
 
-func NewModel(ctx *context.MainContext) *Model {
-	palette := common.DefaultPalette
-	text := palette.Get("picker text")
-	dimmed := palette.Get("picker dimmed")
+func NewModel(ctx *context.MainContext, payload any, sources ...source.Source) *Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
-	tis := ti.Styles()
-	tis.Focused.Prompt = dimmed
-	tis.Focused.Text = text
-	tis.Blurred.Prompt = dimmed
-	tis.Blurred.Text = text
-	ti.SetStyles(tis)
 	ti.CharLimit = 0
+	ti.SetVirtualCursor(false)
 	ti.Focus()
 
 	m := &Model{
-		context: ctx,
-		input:   ti,
-		cursor:  0,
-		styles: styles{
-			bookmarkPill: palette.Get("picker bookmark"),
-			selected:     palette.Get("picker selected"),
-			dimmed:       dimmed,
-			matchStyle:   palette.Get("picker matched"),
-			border:       palette.GetBorder("picker border", lipgloss.NormalBorder()),
-		},
+		context:             ctx,
+		input:               ti,
+		cursor:              0,
 		listRenderer:        render.NewListRenderer(itemScrollMsg{}),
 		ensureCursorVisible: true,
+		payload:             payload,
+		sources:             sources,
 	}
 	m.listRenderer.Z = render.ZMenuContent
 	return m
@@ -184,7 +157,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	switch intent := intent.(type) {
 	case intents.TargetPickerCancel:
-		return TargetPickerCancelCmd(), true
+		return func() tea.Msg { return TargetPickerCancelMsg{} }, true
 	case intents.TargetPickerApply:
 		return m.accept(intent.Force), true
 	case intents.TargetPickerNavigate:
@@ -210,20 +183,38 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 		return
 	}
 
+	bookmarkPillStyle := common.DefaultPalette.Get("picker bookmark")
+	selectedStyle := common.DefaultPalette.Get("picker selected")
+	selectedDimmedStyle := common.DefaultPalette.Get("picker selected dimmed")
+	selectedTextStyle := common.DefaultPalette.Get("picker selected text")
+	selectedMatchStyle := common.DefaultPalette.Get("picker selected matched")
+	matchedStyle := common.DefaultPalette.Get("picker matched")
+	borderStyle := common.DefaultPalette.GetBorder("picker border", lipgloss.NormalBorder())
+	textStyle := common.DefaultPalette.Get("picker text")
+	dimmedStyle := common.DefaultPalette.Get("picker dimmed")
+
 	maxW := min(maxWidth, box.R.Dx())
 	maxH := min(maxHeight, box.R.Dy())
 	centeredBox := box.Center(maxW, maxH)
 
 	frame := centeredBox
 	dl.AddBackdrop(box.R, render.ZMenuBorder-1)
-	borderContent := m.styles.border.Width(frame.R.Dx()).Height(frame.R.Dy()).Render("")
+	borderContent := borderStyle.Width(frame.R.Dx()).Height(frame.R.Dy()).Render("")
 	dl.AddDraw(frame.R, borderContent, render.ZMenuBorder)
 	centeredBox = centeredBox.Inset(1)
 
 	inputBox, listBox := centeredBox.CutTop(1)
 	m.input.SetWidth(inputBox.R.Dx())
 
+	tis := m.input.Styles()
+	tis.Focused.Prompt = dimmedStyle
+	tis.Focused.Text = textStyle
+	tis.Blurred.Prompt = dimmedStyle
+	tis.Blurred.Text = textStyle
+	m.input.SetStyles(tis)
+
 	dl.AddDraw(inputBox.R, m.input.View(), render.ZMenuContent)
+	dl.SetCursorInRect(m.input.Cursor(), inputBox.R, 0, 0)
 
 	m.listRenderer.Render(
 		dl,
@@ -240,22 +231,29 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 			item := m.items[match.Index]
 			y := rect.Min.Y
 
-			pillText := m.renderPill(item.Kind)
-			pillRect := layout.Rect(rect.Min.X, y, pillWidth, 1)
-			dl.AddDraw(pillRect, pillText, render.ZMenuContent)
-
 			isSelected := index == m.cursor
-			lineStyle := m.styles.bookmarkPill
-			matchStyle := m.styles.matchStyle
+			pillStyle := dimmedStyle
+			lineStyle := bookmarkPillStyle
+			matchStyle := matchedStyle
 			if isSelected {
-				dl.AddHighlight(rect, m.styles.selected, render.ZMenuContent+1)
+				pillStyle = selectedDimmedStyle
+				lineStyle = selectedTextStyle
+				matchStyle = selectedMatchStyle
+				dl.AddFill(rect, ' ', selectedStyle, render.ZMenuContent-1)
 			} else {
 				matchStyle = matchStyle.Inherit(lineStyle)
 			}
+			pillText := m.renderPill(item.Kind, pillStyle)
+			pillRect := layout.Rect(rect.Min.X, y, pillWidth, 1)
+			dl.AddDraw(pillRect, pillText, render.ZMenuContent)
+
 			nameContent := fuzzy_search.HighlightMatched(item.Name, match, lineStyle, matchStyle)
 			nameX := rect.Min.X + pillWidth + 1
-			nameRect := layout.Rect(nameX, y, rect.Dx()-pillWidth-1, 1)
-			dl.AddDraw(nameRect, nameContent, render.ZMenuContent)
+			nameWidth := min(lipgloss.Width(nameContent), rect.Dx()-pillWidth-1)
+			if nameWidth > 0 {
+				nameRect := layout.Rect(nameX, y, nameWidth, 1)
+				dl.AddDraw(nameRect, nameContent, render.ZMenuContent)
+			}
 		},
 		func(index int, _ tea.Mouse) tea.Msg { return itemClickedMsg{index: index} },
 	)
@@ -263,12 +261,22 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	m.ensureCursorVisible = false
 }
 
-func (m *Model) renderPill(kind ItemKind) string {
+func (m *Model) renderPill(kind source.Kind, style lipgloss.Style) string {
 	switch kind {
-	case KindBookmark:
-		return m.styles.dimmed.Width(pillWidth).Align(lipgloss.Right).Render("bookmark")
-	case KindTag:
-		return m.styles.dimmed.Width(pillWidth).Align(lipgloss.Right).Render("tag")
+	case source.KindBookmark:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("bookmark")
+	case source.KindTag:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("tag")
+	case source.KindFunction:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("function")
+	case source.KindAlias:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("alias")
+	case source.KindHistory:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("history")
+	case source.KindFile:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("file")
+	case source.KindRemote:
+		return style.Width(pillWidth).Align(lipgloss.Right).Render("remote")
 	default:
 		return strings.Repeat(" ", pillWidth)
 	}
@@ -276,14 +284,10 @@ func (m *Model) renderPill(kind ItemKind) string {
 
 func (m *Model) fetchItems() tea.Cmd {
 	return func() tea.Msg {
-		sourceItems := source.FetchAll(m.context.RunCommandImmediate, source.BookmarkSource{}, source.TagSource{})
+		sourceItems := source.FetchAll(m.context.RunCommandImmediate, m.sources...)
 		items := make([]Item, len(sourceItems))
 		for i, si := range sourceItems {
-			kind := KindBookmark
-			if si.Kind == source.KindTag {
-				kind = KindTag
-			}
-			items[i] = Item{Name: si.Name, Kind: kind}
+			items[i] = Item{Name: si.Name, Kind: si.Kind}
 		}
 		return itemsLoadedMsg{items: items}
 	}
@@ -333,20 +337,12 @@ func (m *Model) cursorDown() {
 func (m *Model) accept(force bool) tea.Cmd {
 	if m.cursor >= 0 && m.cursor < len(m.matches) {
 		item := m.items[m.matches[m.cursor].Index]
-		return TargetSelectedCmd(item.Name, force)
+		return func() tea.Msg { return TargetSelectedMsg{Target: item.Name, Force: force, Payload: m.payload} }
 	}
 	if input := strings.TrimSpace(m.input.Value()); input != "" {
-		return TargetSelectedCmd(input, force)
+		return func() tea.Msg { return TargetSelectedMsg{Target: input, Force: force, Payload: m.payload} }
 	}
 	return nil
-}
-
-func TargetSelectedCmd(target string, force bool) tea.Cmd {
-	return func() tea.Msg { return TargetSelectedMsg{Target: target, Force: force} }
-}
-
-func TargetPickerCancelCmd() tea.Cmd {
-	return func() tea.Msg { return TargetPickerCancelMsg{} }
 }
 
 func (m *Model) Len() int {

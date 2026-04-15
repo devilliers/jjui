@@ -13,7 +13,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -43,23 +42,6 @@ func (m itemScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 	return m
 }
 
-type menuStyles struct {
-	title    lipgloss.Style
-	shortcut lipgloss.Style
-	dimmed   lipgloss.Style
-	selected lipgloss.Style
-	matched  lipgloss.Style
-	text     lipgloss.Style
-	border   lipgloss.Style
-}
-
-type remoteStyles struct {
-	promptStyle   lipgloss.Style
-	textStyle     lipgloss.Style
-	selectedStyle lipgloss.Style
-	noRemoteStyle lipgloss.Style
-}
-
 type filterState int
 
 const (
@@ -87,8 +69,6 @@ type Model struct {
 	filterText          string
 	categoryFilter      string
 	ensureCursorVisible bool
-	menuStyles          menuStyles
-	remoteStyles        remoteStyles
 	title               string
 }
 
@@ -136,25 +116,25 @@ func (i item) ShortCut() string {
 	return i.key
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
+func (m *Model) Scopes() []common.Scope {
 	if m.IsEditing() {
-		return []dispatch.Scope{
+		return []common.Scope{
 			{
 				Name:    actions.ScopeBookmarks + ".filter",
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 			{
 				Name:    actions.ScopeBookmarks,
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 		}
 	}
-	return []dispatch.Scope{
+	return []common.Scope{
 		{
 			Name:    actions.ScopeBookmarks,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: m,
 		},
 	}
@@ -435,10 +415,8 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		if m.categoryFilter == "" {
 			return nil, true
 		}
-		for _, listItem := range m.visibleItems() {
-			if listItem.key == msg.Key {
-				return m.context.RunCommand(jj.Args(listItem.args...), common.Refresh, common.CloseApplied), true
-			}
+		if cmd := m.executeShortcut(msg.Key); cmd != nil {
+			return cmd, true
 		}
 		return nil, true
 	}
@@ -446,11 +424,25 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 }
 
 func (m *Model) executeDefaultForFilter(kind intents.BookmarksFilterKind) tea.Cmd {
+	for _, listItem := range m.visibleItems() {
+		if listItem.key != "" {
+			return m.context.RunCommand(jj.Args(listItem.args...), common.Refresh, common.CloseApplied)
+		}
+	}
 	if selected, ok := m.selectedItem(); ok {
 		return m.context.RunCommand(jj.Args(selected.args...), common.Refresh, common.CloseApplied)
 	}
 	for _, listItem := range m.visibleItems() {
 		if strings.HasPrefix(listItem.FilterValue(), string(kind)) {
+			return m.context.RunCommand(jj.Args(listItem.args...), common.Refresh, common.CloseApplied)
+		}
+	}
+	return nil
+}
+
+func (m *Model) executeShortcut(key string) tea.Cmd {
+	for _, listItem := range m.visibleItems() {
+		if listItem.key == key {
 			return m.context.RunCommand(jj.Args(listItem.args...), common.Refresh, common.CloseApplied)
 		}
 	}
@@ -484,20 +476,25 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 		return
 	}
 
+	menuTitleStyle := common.DefaultPalette.Get("bookmarks menu title")
+	menuTextStyle := common.DefaultPalette.Get("bookmarks menu text")
+	menuMatchedStyle := common.DefaultPalette.Get("bookmarks menu matched")
+	borderStyle := common.DefaultPalette.GetBorder("bookmarks menu border", lipgloss.NormalBorder())
+
 	dl.AddBackdrop(box.R, render.ZMenuBorder-1)
 	contentBox := frame.Inset(1)
 	if contentBox.R.Dx() <= 0 || contentBox.R.Dy() <= 0 {
 		return
 	}
-	dl.AddFill(contentBox.R, ' ', m.menuStyles.text, render.ZMenuContent)
+	dl.AddFill(contentBox.R, ' ', menuTextStyle, render.ZMenuContent)
 
 	borderBase := lipgloss.NewStyle().Width(contentBox.R.Dx()).Height(contentBox.R.Dy()).Render("")
-	dl.AddDraw(frame.R, m.menuStyles.border.Render(borderBase), render.ZMenuBorder)
+	dl.AddDraw(frame.R, borderStyle.Render(borderBase), render.ZMenuBorder)
 
 	titleBox, contentBox := contentBox.CutTop(1)
 	dl.
 		Text(titleBox.R.Min.X, titleBox.R.Min.Y, render.ZMenuContent).
-		Styled(m.title, m.menuStyles.title).
+		Styled(m.title, menuTitleStyle).
 		Done()
 
 	_, contentBox = contentBox.CutTop(1)
@@ -507,8 +504,15 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	_, contentBox = contentBox.CutTop(1)
 	filterBox, contentBox := contentBox.CutTop(1)
 	if m.filterState == filterEditing {
+		fis := m.filterInput.Styles()
+		fis.Focused.Prompt = menuMatchedStyle.PaddingLeft(1)
+		fis.Focused.Text = menuTextStyle
+		fis.Blurred.Prompt = menuMatchedStyle.PaddingLeft(1)
+		fis.Blurred.Text = menuTextStyle
+		m.filterInput.SetStyles(fis)
 		m.filterInput.SetWidth(max(contentBox.R.Dx()-2, 0))
 		dl.AddDraw(filterBox.R, m.filterInput.View(), render.ZMenuContent)
+		dl.SetCursorInRect(m.filterInput.Cursor(), filterBox.R, 0, 0)
 	} else {
 		m.renderFilterView(dl, filterBox)
 	}
@@ -521,24 +525,31 @@ func (m *Model) renderRemotes(dl *render.DisplayContext, lineBox layout.Box) {
 	if lineBox.R.Dx() <= 0 || lineBox.R.Dy() <= 0 {
 		return
 	}
-	dl.AddFill(lineBox.R, ' ', m.menuStyles.text, render.ZMenuContent)
+
+	remotePromptStyle := common.DefaultPalette.Get("bookmarks title")
+	menuTextStyle := common.DefaultPalette.Get("bookmarks menu text")
+	remoteTextStyle := common.DefaultPalette.Get("bookmarks dimmed")
+	remoteSelectedStyle := common.DefaultPalette.Get("bookmarks menu selected")
+	noRemoteStyle := common.DefaultPalette.Get("bookmarks error")
+
+	dl.AddFill(lineBox.R, ' ', menuTextStyle, render.ZMenuContent)
 
 	// Render above menu content
 	tb := dl.Text(lineBox.R.Min.X, lineBox.R.Min.Y, render.ZMenuContent+1).
-		Styled(" ", m.menuStyles.text).
-		Styled("Remotes: ", m.remoteStyles.promptStyle)
+		Styled(" ", menuTextStyle).
+		Styled("Remotes: ", remotePromptStyle)
 
 	if len(m.remoteNames) == 0 {
-		tb.Styled("NO REMOTE FOUND", m.remoteStyles.noRemoteStyle).Done()
+		tb.Styled("NO REMOTE FOUND", noRemoteStyle).Done()
 		return
 	}
 
 	for idx, remoteName := range m.remoteNames {
-		style := m.remoteStyles.textStyle
+		style := remoteTextStyle
 		if idx == m.selectedRemoteIdx {
-			style = m.remoteStyles.selectedStyle
+			style = remoteSelectedStyle
 		}
-		tb.Clickable(remoteName, style, SelectRemoteMsg{Index: idx}).Styled(" ", m.menuStyles.text)
+		tb.Clickable(remoteName, style, SelectRemoteMsg{Index: idx}).Styled(" ", menuTextStyle)
 	}
 
 	tb.Done()
@@ -576,21 +587,12 @@ func NewModel(c *context.MainContext, current *jj.Commit, commitIds []string) *M
 	// Add "local" as the first option to view local bookmark operations
 	remotes = append([]string{"local"}, remotes...)
 
-	remoteStyles := remoteStyles{
-		promptStyle:   common.DefaultPalette.Get("title"),
-		textStyle:     common.DefaultPalette.Get("dimmed"),
-		selectedStyle: common.DefaultPalette.Get("menu selected"),
-		noRemoteStyle: common.DefaultPalette.Get("error"),
-	}
-
 	m := &Model{
 		context:           c,
 		current:           current,
 		distanceMap:       calcDistanceMap(current.CommitId, commitIds),
 		remoteNames:       remotes,
 		selectedRemoteIdx: 0,
-		remoteStyles:      remoteStyles,
-		menuStyles:        createMenuStyles("bookmarks"),
 		listRenderer:      render.NewListRenderer(itemScrollMsg{}),
 		title:             "Bookmark Operations",
 		allItems:          make([]item, 0),
@@ -599,30 +601,10 @@ func NewModel(c *context.MainContext, current *jj.Commit, commitIds []string) *M
 
 	m.filterInput = textinput.New()
 	m.filterInput.Prompt = "Filter: "
-	fis := m.filterInput.Styles()
-	fis.Focused.Prompt = m.menuStyles.matched.PaddingLeft(1)
-	fis.Focused.Text = m.menuStyles.text
-	fis.Blurred.Prompt = m.menuStyles.matched.PaddingLeft(1)
-	fis.Blurred.Text = m.menuStyles.text
-	m.filterInput.SetStyles(fis)
+	m.filterInput.SetVirtualCursor(false)
 	m.applyFilters(true)
 
 	return m
-}
-
-func createMenuStyles(prefix string) menuStyles {
-	if prefix != "" {
-		prefix += " "
-	}
-	return menuStyles{
-		title:    common.DefaultPalette.Get(prefix+"menu title").Padding(0, 1, 0, 1),
-		selected: common.DefaultPalette.Get(prefix + "menu selected"),
-		matched:  common.DefaultPalette.Get(prefix + "menu matched"),
-		dimmed:   common.DefaultPalette.Get(prefix + "menu dimmed"),
-		shortcut: common.DefaultPalette.Get(prefix + "menu shortcut"),
-		text:     common.DefaultPalette.Get(prefix + "menu text"),
-		border:   common.DefaultPalette.GetBorder(prefix+"menu border", lipgloss.NormalBorder()),
-	}
 }
 
 func (m *Model) visibleItems() []item {
@@ -761,8 +743,10 @@ func (m *Model) renderFilterView(dl *render.DisplayContext, box layout.Box) {
 		return
 	}
 	width := box.R.Dx()
-	labelStyle := m.menuStyles.text.PaddingLeft(1).PaddingRight(1)
-	valueStyle := m.menuStyles.matched
+	menuTextStyle := common.DefaultPalette.Get("bookmarks menu text")
+	menuMatchedStyle := common.DefaultPalette.Get("bookmarks menu matched")
+	labelStyle := menuTextStyle.PaddingLeft(1).PaddingRight(1)
+	valueStyle := menuMatchedStyle
 
 	action := "all actions"
 	if m.categoryFilter != "" {
@@ -790,7 +774,7 @@ func (m *Model) renderFilterView(dl *render.DisplayContext, box layout.Box) {
 		)
 	}
 
-	dl.AddDraw(box.R, m.menuStyles.text.Width(width).Render(lipgloss.JoinHorizontal(0, parts...)), render.ZMenuContent)
+	dl.AddDraw(box.R, menuTextStyle.Width(width).Render(lipgloss.JoinHorizontal(0, parts...)), render.ZMenuContent)
 }
 
 func (m *Model) renderList(dl *render.DisplayContext, listBox layout.Box) {
@@ -818,7 +802,7 @@ func (m *Model) renderList(dl *render.DisplayContext, listBox layout.Box) {
 			if index < 0 || index >= itemCount {
 				return
 			}
-			renderItem(dl, rect, listWidth, m.menuStyles, m.categoryFilter != "", m.cursor, index, items[index])
+			renderItem(dl, rect, listWidth, m.categoryFilter != "", m.cursor, index, items[index])
 		},
 		func(index int, _ tea.Mouse) tea.Msg { return itemClickMsg{Index: index} },
 	)
@@ -826,7 +810,7 @@ func (m *Model) renderList(dl *render.DisplayContext, listBox layout.Box) {
 	m.ensureCursorVisible = false
 }
 
-func renderItem(dl *render.DisplayContext, rect layout.Rectangle, width int, styles menuStyles, showShortcuts bool, cursor int, index int, item item) {
+func renderItem(dl *render.DisplayContext, rect layout.Rectangle, width int, showShortcuts bool, cursor int, index int, item item) {
 	var (
 		title string
 		desc  string
@@ -849,29 +833,29 @@ func renderItem(dl *render.DisplayContext, rect layout.Rectangle, width int, sty
 		desc = desc[:width-1] + "…"
 	}
 
-	titleStyle := styles.text
-	descStyle := styles.dimmed
-	shortcutStyle := styles.shortcut
+	textStyle := common.DefaultPalette.Get("bookmarks menu text")
+	descStyle := common.DefaultPalette.Get("bookmarks menu dimmed")
+	shortcutStyle := common.DefaultPalette.Get("bookmarks menu shortcut")
 
 	if index == cursor {
-		titleStyle = styles.selected
-		descStyle = styles.selected
-		shortcutStyle = shortcutStyle.Background(styles.selected.GetBackground())
+		textStyle = common.DefaultPalette.Get("bookmarks menu selected text")
+		descStyle = common.DefaultPalette.Get("bookmarks menu selected dimmed")
+		shortcutStyle = common.DefaultPalette.Get("bookmarks menu selected shortcut")
 	}
 
 	titleLine := ""
 	if shortcut != "" {
-		titleLine = lipgloss.JoinHorizontal(0, shortcutStyle.PaddingLeft(1).Render(shortcut), titleStyle.PaddingLeft(1).Render(title))
+		titleLine = lipgloss.JoinHorizontal(0, shortcutStyle.PaddingLeft(1).Render(shortcut), textStyle.PaddingLeft(1).Render(title))
 	} else {
-		titleLine = titleStyle.PaddingLeft(1).Render(title)
+		titleLine = textStyle.PaddingLeft(1).Render(title)
 	}
-	titleLine = lipgloss.PlaceHorizontal(width+2, 0, titleLine, lipgloss.WithWhitespaceStyle(titleStyle))
+	titleLine = lipgloss.PlaceHorizontal(width+2, 0, titleLine, lipgloss.WithWhitespaceStyle(textStyle))
 
 	descStyle = descStyle.PaddingLeft(1).PaddingRight(1).Width(width + 2)
 	descLine := descStyle.Render(desc)
-	descLine = lipgloss.PlaceHorizontal(width+2, 0, descLine, lipgloss.WithWhitespaceStyle(titleStyle))
+	descLine = lipgloss.PlaceHorizontal(width+2, 0, descLine, lipgloss.WithWhitespaceStyle(textStyle))
 
-	spacerLine := styles.text.Width(width + 2).Render("")
+	spacerLine := textStyle.Width(width + 2).Render("")
 	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, descLine, spacerLine)
 	if content == "" {
 		return

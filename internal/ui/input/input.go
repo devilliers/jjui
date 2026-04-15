@@ -6,7 +6,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -27,54 +26,42 @@ type Model struct {
 	input  textinput.Model
 	title  string
 	prompt string
-	styles styles
 }
 
 func (m *Model) IsFocused() bool {
 	return true
 }
 
-type styles struct {
-	border lipgloss.Style
-	text   lipgloss.Style
-	title  lipgloss.Style
-}
-
 func New() *Model {
-	return NewWithTitle("", "")
+	return NewWithTitle("", "", "")
 }
 
-func NewWithTitle(title string, prompt string) *Model {
-	styles := styles{
-		border: common.DefaultPalette.GetBorder("input border", lipgloss.RoundedBorder()),
-		text:   common.DefaultPalette.Get("input text"),
-		title:  common.DefaultPalette.Get("input title"),
-	}
+func NewWithTitle(title string, prompt string, value string) *Model {
 	ti := textinput.New()
 	ti.SetWidth(40)
-	ti.Focus()
 	ti.Prompt = prompt
-	is := ti.Styles()
-	is.Focused.Prompt = styles.text
-	is.Blurred.Prompt = styles.text
-	ti.SetStyles(is)
+	ti.SetVirtualCursor(false)
 	if ti.Prompt == "" {
 		ti.Prompt = "> "
 	}
+	if value != "" {
+		ti.SetValue(value)
+		ti.CursorEnd()
+	}
+	ti.Focus()
 
 	return &Model{
 		input:  ti,
 		title:  title,
 		prompt: prompt,
-		styles: styles,
 	}
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (m *Model) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeInput,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: m,
 		},
 	}
@@ -115,26 +102,43 @@ func (m *Model) selectCurrent() tea.Cmd {
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	borderStyle := common.DefaultPalette.GetBorder("input border", lipgloss.RoundedBorder())
+	textStyle := common.DefaultPalette.Get("input text")
+	titleStyle := common.DefaultPalette.Get("input title")
+	surfaceStyle := common.DefaultPalette.Get("input")
+
 	var rows []string
 	if m.title != "" {
-		rows = append(rows, m.styles.title.Render(m.title))
+		rows = append(rows, titleStyle.Render(m.title))
 	}
+	is := m.input.Styles()
+	is.Focused.Prompt = textStyle
+	is.Blurred.Prompt = textStyle
+	m.input.SetStyles(is)
+
 	m.input.SetWidth(min(box.R.Dx()-2, 40))
 	rows = append(rows, m.input.View())
 
 	content := lipgloss.JoinVertical(0, rows...)
-	content = m.styles.border.Padding(0, 1).Render(content)
+	content = borderStyle.Padding(0, 1).Render(content)
 	box = box.Center(lipgloss.Size(content))
 	dl.AddBackdrop(box.R, render.ZDialogs)
+	dl.AddFill(box.R, ' ', surfaceStyle, render.ZDialogs)
 	dl.AddDraw(box.R, content, render.ZDialogs)
+	dl.AddPaint(box.R, surfaceStyle, render.ZDialogs)
+	cursorY := 1
+	if m.title != "" {
+		cursorY++
+	}
+	dl.SetCursorInRect(m.input.Cursor(), box.R, 2, cursorY)
 }
 
 func newCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
 }
 
-func ShowWithTitle(title string, prompt string) tea.Cmd {
+func ShowWithTitle(title string, prompt string, value string) tea.Cmd {
 	return func() tea.Msg {
-		return common.ShowInputMsg{Title: title, Prompt: prompt}
+		return common.ShowInputMsg{Title: title, Prompt: prompt, Value: value}
 	}
 }

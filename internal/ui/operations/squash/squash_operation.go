@@ -5,12 +5,11 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/jj/source"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -19,9 +18,9 @@ import (
 )
 
 var (
-	_ operations.Operation   = (*Operation)(nil)
-	_ common.Focusable       = (*Operation)(nil)
-	_ dispatch.ScopeProvider = (*Operation)(nil)
+	_ operations.Operation = (*Operation)(nil)
+	_ common.Focusable     = (*Operation)(nil)
+	_ common.ScopeProvider = (*Operation)(nil)
 )
 
 type Operation struct {
@@ -33,27 +32,20 @@ type Operation struct {
 	keepEmptied           bool
 	useDestinationMessage bool
 	interactive           bool
-	styles                styles
 }
 
 func (s *Operation) IsFocused() bool {
 	return true
 }
 
-func (s *Operation) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (s *Operation) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeSquash,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: s,
 		},
 	}
-}
-
-type styles struct {
-	dimmed       lipgloss.Style
-	sourceMarker lipgloss.Style
-	targetMarker lipgloss.Style
 }
 
 func (s *Operation) Init() tea.Cmd {
@@ -66,6 +58,12 @@ func (s *Operation) Update(msg tea.Msg) tea.Cmd {
 		s.targetName = strings.TrimSpace(msg.Target)
 		cmd, _ := s.HandleIntent(intents.Apply{Force: msg.Force})
 		return cmd
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return s.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	case intents.Intent:
 		cmd, _ := s.HandleIntent(msg)
 		return cmd
@@ -85,7 +83,7 @@ func (s *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		}
 		return tea.Batch(common.CloseApplied, s.context.RunCommand(args, continuation)), true
 	case intents.SquashOpenTargetPicker:
-		return common.OpenTargetPicker(), true
+		return common.OpenTargetPicker(source.BookmarkSource{}, source.TagSource{}), true
 	case intents.Cancel:
 		return common.Close, true
 	case intents.SquashToggleOption:
@@ -104,7 +102,10 @@ func (s *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 
 func (s *Operation) ViewRect(_ *render.DisplayContext, _ layout.Box) {}
 
-func (s *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (s *Operation) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	if s.current.Equal(commit) {
+		return nil
+	}
 	s.current = commit
 	return nil
 }
@@ -113,6 +114,8 @@ func (s *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 	if pos != operations.RenderBeforeChangeId {
 		return ""
 	}
+	sourceMarkerStyle := common.DefaultPalette.Get("squash source_marker")
+	targetMarkerStyle := common.DefaultPalette.Get("squash target_marker")
 
 	isSelected := s.current != nil && s.current.GetChangeId() == commit.GetChangeId()
 	if isSelected {
@@ -120,7 +123,7 @@ func (s *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 		if s.useDestinationMessage {
 			marker = "<< use this message >>"
 		}
-		return s.styles.targetMarker.Render(marker)
+		return targetMarkerStyle.Render(marker)
 	}
 	sourceIds := s.from.GetIds()
 	if slices.Contains(sourceIds, commit.ChangeId) {
@@ -131,7 +134,7 @@ func (s *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 		if s.interactive {
 			marker += " (interactive)"
 		}
-		return s.styles.sourceMarker.Render(marker)
+		return sourceMarkerStyle.Render(marker)
 	}
 	return ""
 }
@@ -158,16 +161,11 @@ func WithFiles(files []string) Option {
 	}
 }
 
-func NewOperation(context *context.MainContext, from jj.SelectedRevisions, opts ...Option) *Operation {
-	styles := styles{
-		dimmed:       common.DefaultPalette.Get("squash dimmed"),
-		sourceMarker: common.DefaultPalette.Get("squash source_marker"),
-		targetMarker: common.DefaultPalette.Get("squash target_marker"),
-	}
+func NewOperation(context *context.MainContext, from jj.SelectedRevisions, current *jj.Commit, opts ...Option) *Operation {
 	o := &Operation{
 		context: context,
 		from:    from,
-		styles:  styles,
+		current: current,
 	}
 	for _, opt := range opts {
 		opt(o)

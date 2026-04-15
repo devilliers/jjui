@@ -38,3 +38,7 @@ result-*
 
 # direnv
 .direnv
+.cache/
+.trees/
+jjui-ws
+testings/

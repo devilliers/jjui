@@ -6,10 +6,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/jj/source"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	appContext "github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -25,17 +25,9 @@ var (
 	}
 )
 
-type styles struct {
-	changeId     lipgloss.Style
-	dimmed       lipgloss.Style
-	shortcut     lipgloss.Style
-	targetMarker lipgloss.Style
-	sourceMarker lipgloss.Style
-}
-
 var _ operations.Operation = (*Operation)(nil)
 var _ common.Focusable = (*Operation)(nil)
-var _ dispatch.ScopeProvider = (*Operation)(nil)
+var _ common.ScopeProvider = (*Operation)(nil)
 
 type Operation struct {
 	context     *appContext.MainContext
@@ -44,18 +36,17 @@ type Operation struct {
 	To          *jj.Commit
 	Target      intents.ModeTarget
 	targetName  string
-	styles      styles
 }
 
 func (r *Operation) IsFocused() bool {
 	return true
 }
 
-func (r *Operation) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (r *Operation) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeDuplicate,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: r,
 		},
 	}
@@ -71,6 +62,12 @@ func (r *Operation) Update(msg tea.Msg) tea.Cmd {
 		r.targetName = strings.TrimSpace(msg.Target)
 		cmd, _ := r.HandleIntent(intents.Apply{Force: msg.Force})
 		return cmd
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return r.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	case intents.Intent:
 		cmd, _ := r.HandleIntent(msg)
 		return cmd
@@ -89,7 +86,7 @@ func (r *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case intents.DuplicateOpenTargetPicker:
-		return common.OpenTargetPicker(), true
+		return common.OpenTargetPicker(source.BookmarkSource{}, source.TagSource{}), true
 	case intents.Apply:
 		if r.Target == intents.ModeTargetInsert {
 			insertAfter := r.InsertStart.GetChangeId()
@@ -104,22 +101,30 @@ func (r *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (r *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (r *Operation) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	if r.To.Equal(commit) {
+		return nil
+	}
 	r.To = commit
 	return nil
 }
 
 func (r *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) string {
+	changeIdStyle := common.DefaultPalette.Get("duplicate change_id")
+	dimmedStyle := common.DefaultPalette.Get("duplicate dimmed")
+	sourceMarker := common.DefaultPalette.Get("duplicate source_marker")
+	targetMarkerStyle := common.DefaultPalette.Get("duplicate target_marker")
+
 	if pos == operations.RenderBeforeChangeId {
 		changeId := commit.GetChangeId()
 		if r.From.Contains(commit) {
-			return r.styles.sourceMarker.Render("<< duplicate >>")
+			return sourceMarker.Render("<< duplicate >>")
 		}
 		if r.Target == intents.ModeTargetInsert && r.InsertStart != nil && r.InsertStart.GetChangeId() == changeId {
-			return r.styles.sourceMarker.Render("<< after this >>")
+			return sourceMarker.Render("<< after this >>")
 		}
 		if r.Target == intents.ModeTargetInsert && r.To != nil && r.To.GetChangeId() == changeId {
-			return r.styles.sourceMarker.Render("<< before this >>")
+			return sourceMarker.Render("<< before this >>")
 		}
 		return ""
 	}
@@ -154,24 +159,24 @@ func (r *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) str
 	if r.Target == intents.ModeTargetInsert {
 		return lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			r.styles.targetMarker.Render("<< insert >>"),
+			targetMarkerStyle.Render("<< insert >>"),
 			" ",
-			r.styles.dimmed.Render("duplicate "),
-			r.styles.changeId.Render(strings.Join(r.From.GetIds(), " ")),
-			r.styles.dimmed.Render(" between "),
-			r.styles.changeId.Render(r.InsertStart.GetChangeId()),
-			r.styles.dimmed.Render(" and "),
-			r.styles.changeId.Render(r.To.GetChangeId()),
+			dimmedStyle.Render("duplicate "),
+			changeIdStyle.Render(strings.Join(r.From.GetIds(), " ")),
+			dimmedStyle.Render(" between "),
+			changeIdStyle.Render(r.InsertStart.GetChangeId()),
+			dimmedStyle.Render(" and "),
+			changeIdStyle.Render(r.To.GetChangeId()),
 		)
 	}
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		r.styles.targetMarker.Render("<< "+ret+" >>"),
-		r.styles.dimmed.Render(" duplicate "),
-		r.styles.changeId.Render(strings.Join(r.From.GetIds(), " ")),
-		r.styles.dimmed.Render("", ret, ""),
-		r.styles.changeId.Render(r.To.GetChangeId()),
+		targetMarkerStyle.Render("<< "+ret+" >>"),
+		dimmedStyle.Render(" duplicate "),
+		changeIdStyle.Render(strings.Join(r.From.GetIds(), " ")),
+		dimmedStyle.Render("", ret, ""),
+		changeIdStyle.Render(r.To.GetChangeId()),
 	)
 }
 
@@ -191,17 +196,11 @@ func (r *Operation) targetArg() string {
 	return ""
 }
 
-func NewOperation(context *appContext.MainContext, from jj.SelectedRevisions, target intents.ModeTarget) *Operation {
-	styles := styles{
-		changeId:     common.DefaultPalette.Get("duplicate change_id"),
-		dimmed:       common.DefaultPalette.Get("duplicate dimmed"),
-		sourceMarker: common.DefaultPalette.Get("duplicate source_marker"),
-		targetMarker: common.DefaultPalette.Get("duplicate target_marker"),
-	}
+func NewOperation(context *appContext.MainContext, from jj.SelectedRevisions, current *jj.Commit, target intents.ModeTarget) *Operation {
 	return &Operation{
 		context: context,
 		From:    from,
+		To:      current,
 		Target:  target,
-		styles:  styles,
 	}
 }

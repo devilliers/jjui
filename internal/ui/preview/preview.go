@@ -1,7 +1,6 @@
 package preview
 
 import (
-	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -22,12 +20,10 @@ import (
 var _ common.ImmediateModel = (*Model)(nil)
 
 type Model struct {
-	view                viewport.Model
-	previewVisible      bool
-	previewAutoPosition bool
-	previewAtBottom     bool
-	content             string
-	context             *context.MainContext
+	view        viewport.Model
+	content     string
+	contentItem common.SelectedItem
+	context     *context.MainContext
 }
 
 const (
@@ -40,7 +36,8 @@ type previewMsg struct {
 }
 
 type updatePreviewContentMsg struct {
-	Content string
+	contentItem common.SelectedItem
+	content     string
 }
 
 type ScrollMsg struct {
@@ -54,14 +51,11 @@ func (s ScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 	return s
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	if !m.Visible() {
-		return nil
-	}
-	return []dispatch.Scope{
+func (m *Model) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeUiPreview,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Global:  true,
 			Handler: m,
 		},
@@ -94,35 +88,8 @@ func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
-func (m *Model) Visible() bool {
-	return m.previewVisible
-}
-
-func (m *Model) SetVisible(visible bool) {
-	m.previewVisible = visible
-	if m.previewVisible {
-		m.reset()
-	}
-}
-
-func (m *Model) ToggleVisible() {
-	m.previewVisible = !m.previewVisible
-	if m.previewVisible {
-		m.reset()
-	}
-}
-
-func (m *Model) SetPosition(autoPos bool, atBottom bool) {
-	m.previewAutoPosition = autoPos
-	m.previewAtBottom = atBottom
-}
-
-func (m *Model) AutoPosition() bool {
-	return m.previewAutoPosition
-}
-
-func (m *Model) AtBottom() bool {
-	return m.previewAtBottom
+func (m *Model) OnShow() {
+	m.reset()
 }
 
 func (m *Model) YOffset() int {
@@ -183,14 +150,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.SetContent(msg.Content)
 		return nil
 	case common.SelectionChangedMsg:
-		if msg.Item != nil {
-			return m.refreshPreviewForItem(msg.Item)
-		}
-		return m.refreshPreview()
+		return m.refreshPreviewForItem(m.context.SelectedItem)
 	case common.RefreshMsg:
-		return m.refreshPreview()
+		return m.refreshPreviewForItem(m.context.SelectedItem)
 	case updatePreviewContentMsg:
-		m.SetContent(msg.Content)
+		m.contentItem = msg.contentItem
+		m.SetContent(msg.content)
 		return nil
 	}
 	return nil
@@ -211,9 +176,11 @@ func (m *Model) SetContent(content string) {
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	surfaceStyle := common.DefaultPalette.Get("preview")
 	m.view.SetWidth(box.R.Dx())
 	m.view.SetHeight(box.R.Dy())
-	dl.AddDraw(box.R, m.view.View(), render.ZPreview)
+	dl.AddFill(box.R, ' ', surfaceStyle, render.ZPreview)
+	dl.AddDraw(box.R, m.view.View(), render.ZPreview, render.PreserveBackground())
 
 	scrollRect := layout.Rect(box.R.Min.X, box.R.Min.Y, box.R.Dx(), box.R.Dy())
 	dl.AddInteraction(scrollRect, ScrollMsg{}, render.InteractionScroll, render.ZPreview)
@@ -222,10 +189,6 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 func (m *Model) reset() {
 	m.view.SetYOffset(0)
 	m.view.SetXOffset(0)
-}
-
-func (m *Model) refreshPreview() tea.Cmd {
-	return m.refreshPreviewForItem(m.context.SelectedItem)
 }
 
 func (m *Model) refreshPreviewForItem(item common.SelectedItem) tea.Cmd {
@@ -266,34 +229,23 @@ func (m *Model) refreshPreviewForItem(item common.SelectedItem) tea.Cmd {
 			// The preview subprocess does not run in a pane-sized PTY, so let
 			// width-sensitive tools like `jj diff` see the preview size via the
 			// conventional terminal size environment variables.
+			"DFT_WIDTH=" + strconv.Itoa(m.view.Width()), // difftastic
 			"COLUMNS=" + strconv.Itoa(m.view.Width()),
 			"LINES=" + strconv.Itoa(m.view.Height()),
 		}
+		if m.contentItem != nil && m.contentItem.Equal(item) {
+			return nil
+		}
 		output, _ := m.context.RunCommandImmediateWithEnv(args, env)
 		return updatePreviewContentMsg{
-			Content: string(output),
+			contentItem: item,
+			content:     string(output),
 		}
 	})
 }
 
 func New(context *context.MainContext) *Model {
-	previewAutoPosition := false
-	previewAtBottom := false
-	previewPositionCfg, err := config.GetPreviewPosition(config.Current)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if previewPositionCfg == config.PreviewPositionAuto {
-		previewAutoPosition = true
-	} else if previewPositionCfg == config.PreviewPositionBottom {
-		previewAtBottom = true
-	}
-
 	return &Model{
-		context:             context,
-		previewAutoPosition: previewAutoPosition,
-		previewAtBottom:     previewAtBottom,
-		previewVisible:      config.Current.Preview.ShowAtStart,
+		context: context,
 	}
 }

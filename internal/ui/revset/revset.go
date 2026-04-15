@@ -10,7 +10,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/common/autocompletion"
 	appContext "github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -18,7 +17,10 @@ import (
 
 type EditRevSetMsg struct{}
 
-var _ common.ImmediateModel = (*Model)(nil)
+var (
+	_ common.ImmediateModel = (*Model)(nil)
+	_ common.Editable       = (*Model)(nil)
+)
 
 type revsetMsg struct {
 	msg tea.Msg
@@ -45,46 +47,43 @@ type completionClickMsg struct {
 }
 
 type Model struct {
-	Editing            bool
+	editing            bool
 	autoComplete       *autocompletion.AutoCompletionInput
 	completionProvider *CompletionProvider
 	History            []string
 	MaxHistoryItems    int
 	context            *appContext.MainContext
-	styles             styles
 	listRenderer       *render.ListRenderer
 	completionItems    []CompletionItem
 	selectedIndex      int
 	userInput          string // tracks what the user actually typed (separate from preview)
 }
 
-type styles struct {
-	title lipgloss.Style
-	text  lipgloss.Style
-
-	// Completion overlay styles
-	completionText       lipgloss.Style
-	completionMatched    lipgloss.Style
-	completionSelected   lipgloss.Style
-	completionDimmed     lipgloss.Style
-	completionBackground lipgloss.Style
+func (m *Model) IsEditing() bool {
+	return m.editing
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	if !m.Editing {
-		return nil
+func (m *Model) Scopes() []common.Scope {
+	if !m.editing {
+		return []common.Scope{
+			{
+				Name:    actions.ScopeRevset,
+				Leak:    common.LeakAll,
+				Handler: m,
+			},
+		}
 	}
-	return []dispatch.Scope{
+	return []common.Scope{
 		{
 			Name:    actions.ScopeRevset,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: m,
 		},
 	}
 }
 
 func (m *Model) IsFocused() bool {
-	return m.Editing
+	return m.editing
 }
 
 func (m *Model) GetValue() string {
@@ -92,17 +91,6 @@ func (m *Model) GetValue() string {
 }
 
 func New(context *appContext.MainContext) *Model {
-	palette := common.DefaultPalette
-	styles := styles{
-		title:                palette.Get("revset title"),
-		text:                 palette.Get("revset text"),
-		completionText:       palette.Get("revset completion text"),
-		completionMatched:    palette.Get("revset completion matched"),
-		completionSelected:   palette.Get("revset completion selected"),
-		completionDimmed:     palette.Get("revset completion dimmed"),
-		completionBackground: palette.Get("revset completion"),
-	}
-
 	revsetAliases := context.JJConfig.RevsetAliases
 	completionProvider := NewCompletionProvider(revsetAliases)
 	autoComplete := autocompletion.New(
@@ -116,12 +104,11 @@ func New(context *appContext.MainContext) *Model {
 
 	return &Model{
 		context:            context,
-		Editing:            false,
+		editing:            false,
 		autoComplete:       autoComplete,
 		completionProvider: completionProvider,
 		History:            []string{},
 		MaxHistoryItems:    50,
-		styles:             styles,
 		listRenderer:       render.NewListRenderer(completionScrollMsg{}),
 		selectedIndex:      -1, // no selection initially
 	}
@@ -187,12 +174,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyMsg:
-		if !m.Editing {
+		if !m.editing {
 			return nil
 		}
 	case common.UpdateRevSetMsg:
-		if m.Editing {
-			m.Editing = false
+		if m.editing {
+			m.editing = false
 		}
 		m.autoComplete.SetValue(string(msg))
 		m.userInput = string(msg)
@@ -243,6 +230,10 @@ func (m *Model) updatePreview() {
 	}
 
 	item := m.completionItems[m.selectedIndex]
+	if item.Kind == KindArgument {
+		m.selectCompletionItem(item)
+		return
+	}
 	previewValue := m.applyCompletion(m.userInput, item)
 
 	m.autoComplete.SetValue(previewValue)
@@ -252,7 +243,7 @@ func (m *Model) updatePreview() {
 func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	switch intent := intent.(type) {
 	case intents.Set:
-		m.Editing = false
+		m.editing = false
 		m.autoComplete.Blur()
 		value := intent.Value
 		if strings.TrimSpace(value) == "" {
@@ -260,11 +251,11 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		}
 		return tea.Batch(common.Close, common.UpdateRevSet(value)), true
 	case intents.Reset:
-		m.Editing = false
+		m.editing = false
 		m.autoComplete.Blur()
 		return tea.Batch(common.Close, common.UpdateRevSet(m.context.DefaultRevset)), true
 	case intents.Edit:
-		m.Editing = true
+		m.editing = true
 		m.autoComplete.Focus()
 		m.completionProvider.Load(m.context.RunCommandImmediate)
 		if intent.Clear {
@@ -277,10 +268,16 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		m.updateCompletionItems()
 		return m.autoComplete.Init(), true
 	case intents.Cancel:
-		m.Editing = false
+		if !m.editing {
+			return nil, false
+		}
+		m.editing = false
 		m.autoComplete.Blur()
 		return nil, true
 	case intents.Apply:
+		if !m.editing {
+			return nil, false
+		}
 		value := intent.Value
 		if value == "" {
 			value = m.autoComplete.Value()
@@ -295,10 +292,13 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 			return intents.Invoke(intents.AddMessage{Text: err.Error(), Err: err}), true
 		}
 
-		m.Editing = false
+		m.editing = false
 		m.autoComplete.Blur()
 		return tea.Batch(common.Close, common.UpdateRevSet(value)), true
 	case intents.CompletionCycle:
+		if !m.editing {
+			return nil, false
+		}
 		if len(m.completionItems) == 0 {
 			return nil, true
 		}
@@ -317,6 +317,9 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		m.updatePreview()
 		return nil, true
 	case intents.CompletionMove:
+		if !m.editing {
+			return nil, false
+		}
 		if len(m.completionItems) == 0 {
 			return nil, true
 		}
@@ -349,18 +352,23 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
-	// Render the prompt and text input line
+
+	titleStyle := common.DefaultPalette.Get("revset title")
+	textStyle := common.DefaultPalette.Get("revset text")
+	completionDimmed := common.DefaultPalette.Get("revset completion dimmed")
+
 	tb := dl.Text(box.R.Min.X, box.R.Min.Y, render.ZFuzzyInput)
-	tb.Styled("revset: ", m.styles.title)
-	if m.Editing {
+	tb.Styled("revset: ", titleStyle)
+	if m.editing {
 		// Only render the text input part, not the completions from autoComplete.View()
 		tb.Write(m.autoComplete.TextInput.View())
+		dl.SetCursorInRect(m.autoComplete.TextInput.Cursor(), box.R, render.StringWidth("revset: "), 0)
 	} else {
-		tb.Styled(m.context.CurrentRevset, m.styles.text)
+		tb.Styled(m.context.CurrentRevset, textStyle)
 	}
 	tb.Done()
 
-	if !m.Editing {
+	if !m.editing {
 		return
 	}
 
@@ -372,7 +380,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 		// Show "No suggestions" when there's input but no matches
 		if m.autoComplete.Value() != "" {
 			noSuggestionsRect := layout.Rect(box.R.Min.X, box.R.Max.Y, box.R.Dx(), 1)
-			noSuggestionsText := m.styles.completionDimmed.Render("No suggestions")
+			noSuggestionsText := completionDimmed.Render("No suggestions")
 			dl.AddDraw(noSuggestionsRect, noSuggestionsText, render.ZRevsetOverlay)
 		}
 		return
@@ -381,7 +389,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	// If no items but we have signature help, show it
 	if len(items) == 0 && signatureHelp != "" {
 		sigRect := layout.Rect(box.R.Min.X, box.R.Max.Y, box.R.Dx(), 1)
-		sigText := m.styles.completionDimmed.Render(signatureHelp)
+		sigText := completionDimmed.Render(signatureHelp)
 		dl.AddDraw(sigRect, sigText, render.ZRevsetOverlay)
 		return
 	}
@@ -391,7 +399,9 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	overlayWidth := box.R.Dx()
 	outerBox := layout.NewBox(layout.Rect(box.R.Min.X, box.R.Max.Y, overlayWidth, overlayHeight))
 	// Fill the background to prevent underlying content from showing through
-	dl.AddFill(outerBox.R, ' ', m.styles.completionBackground, render.ZRevsetOverlay-1)
+	dl.AddFill(outerBox.R, ' ', common.DefaultPalette.Get("revset completion"), render.ZRevsetOverlay-1)
+	completionText := common.DefaultPalette.Get("revset completion text")
+	completionMatched := common.DefaultPalette.Get("revset completion matched")
 
 	m.listRenderer.Render(
 		dl,
@@ -407,23 +417,34 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 			isSelected := index == m.selectedIndex
 
 			item := items[index]
+
+			ts := completionText
+			ms := completionMatched
+			ds := completionDimmed
+
+			if isSelected {
+				ts = common.DefaultPalette.Get("revset completion selected text")
+				ms = common.DefaultPalette.Get("revset completion selected matched")
+				ds = common.DefaultPalette.Get("revset completion selected dimmed")
+				dl.AddFill(rect, ' ', common.DefaultPalette.Get("revset completion selected"), render.ZRevsetOverlay-1)
+			}
+
 			tb := dl.Text(rect.Min.X, rect.Min.Y, render.ZRevsetOverlay)
-			pillStyle := m.styles.completionDimmed.Width(pillWidth).Align(lipgloss.Right)
+			pillStyle := ds.Width(pillWidth).Align(lipgloss.Right)
 			tb.Styled(pillLabel(item.Kind), pillStyle)
-			tb.Styled(" ", m.styles.completionText)
-			tb.Styled(item.MatchedPart, m.styles.completionMatched)
-			tb.Styled(item.RestPart, m.styles.completionText)
-			tb.Styled(" ", m.styles.completionText)
+			tb.Styled(" ", ts)
+			tb.Styled(item.MatchedPart, ms)
+			tb.Styled(item.RestPart, ts)
+			tb.Styled(" ", ts)
 
 			if item.SignatureHelp != "" && item.Kind != KindHistory {
 				sigDisplay := m.formatSignature(item)
-				tb.Styled(sigDisplay, m.styles.completionDimmed)
-			}
-
-			if isSelected {
-				dl.AddPaint(rect, m.styles.completionSelected, render.ZRevsetOverlay+1)
+				tb.Styled(sigDisplay, ds)
 			}
 			tb.Done()
+			if isSelected {
+				dl.AddPaint(rect, common.DefaultPalette.Get("revset completion selected"), render.ZRevsetOverlay)
+			}
 		},
 		func(index int, _ tea.Mouse) tea.Msg { return completionClickMsg{index: index} },
 	)
@@ -442,6 +463,10 @@ func pillLabel(kind CompletionKind) string {
 		return "bookmark"
 	case KindTag:
 		return "tag"
+	case KindRemote:
+		return "remote"
+	case KindArgument:
+		return "argument"
 	default:
 		return ""
 	}
@@ -449,14 +474,10 @@ func pillLabel(kind CompletionKind) string {
 
 func (m *Model) formatSignature(item CompletionItem) string {
 	sig := item.SignatureHelp
-	// The signature format is "name(args): description"
-	// We want to show just the description or "(args): desc" if different from name
 	if _, after, ok := strings.Cut(sig, "):"); ok {
-		// Return description part after "): "
 		return strings.TrimSpace(after)
 	}
 	if _, after, ok := strings.Cut(sig, ":"); ok {
-		// Return description part after ": "
 		return strings.TrimSpace(after)
 	}
 	return sig
@@ -467,19 +488,20 @@ func (m *Model) applyCompletion(input string, item CompletionItem) string {
 		return item.Name
 	}
 
-	paren := ""
-	if item.Kind == KindFunction {
-		if !item.HasParameters {
-			paren = "()"
-		} else {
-			paren = "("
+	insertText := item.InsertText
+	if insertText == "" {
+		insertText = item.Name
+		if item.Kind == KindFunction {
+			if item.HasParameters {
+				insertText += "("
+			} else {
+				insertText += "()"
+			}
 		}
+		item.ReplaceStart, _ = m.completionProvider.GetLastToken(input)
 	}
-	completionText := item.Name + paren
-
-	lastTokenIndex, _ := m.completionProvider.GetLastToken(input)
-	if lastTokenIndex > 0 {
-		return input[:lastTokenIndex] + completionText
+	if item.ReplaceStart < 0 || item.ReplaceStart > len(input) {
+		item.ReplaceStart = len(input)
 	}
-	return completionText
+	return input[:item.ReplaceStart] + insertText
 }

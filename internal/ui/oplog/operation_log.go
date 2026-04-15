@@ -12,7 +12,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -36,15 +35,13 @@ func (o OpLogScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 }
 
 var _ common.ImmediateModel = (*Model)(nil)
+var _ common.SelectionProvider = (*Model)(nil)
 
 type Model struct {
 	context          *context.MainContext
 	listRenderer     *render.ListRenderer
 	rows             []row
 	cursor           int
-	textStyle        lipgloss.Style
-	selectedStyle    lipgloss.Style
-	matchedStyle     lipgloss.Style
 	ensureCursorView bool
 	quickSearch      string
 }
@@ -71,18 +68,18 @@ func (m *Model) HasQuickSearch() bool {
 	return m.quickSearch != ""
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	var ret []dispatch.Scope
+func (m *Model) Scopes() []common.Scope {
+	var ret []common.Scope
 	if m.HasQuickSearch() {
-		ret = append(ret, dispatch.Scope{
+		ret = append(ret, common.Scope{
 			Name:    actions.ScopeOplogQuickSearch,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: m,
 		})
 	}
-	ret = append(ret, dispatch.Scope{
+	ret = append(ret, common.Scope{
 		Name:    actions.ScopeOplog,
-		Leak:    dispatch.LeakAll,
+		Leak:    common.LeakAll,
 		Handler: m,
 	})
 	return ret
@@ -108,15 +105,15 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case common.QuickSearchMsg:
 		m.quickSearch = strings.ToLower(string(msg))
 		m.SetCursor(m.search(0, false))
-		return m.updateSelection()
+		return nil
 	case updateOpLogMsg:
 		m.rows = msg.Rows
-		return m.updateSelection()
+		return nil
 	case OpLogClickedMsg:
 		if msg.Index >= 0 && msg.Index < len(m.rows) {
 			m.cursor = msg.Index
 			m.ensureCursorView = true
-			return m.updateSelection()
+			return nil
 		}
 	case OpLogScrollMsg:
 		if msg.Horizontal {
@@ -145,7 +142,7 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 			offset = -1
 		}
 		m.SetCursor(m.search(m.cursor+offset, intent.Reverse))
-		return m.updateSelection(), true
+		return nil, true
 	case intents.OpLogQuickSearchClear:
 		m.quickSearch = ""
 		return nil, true
@@ -181,14 +178,16 @@ func (m *Model) navigate(delta int, page bool) tea.Cmd {
 	}
 
 	m.SetCursor(newCursor)
-	return m.updateSelection()
+	return nil
 }
 
-func (m *Model) updateSelection() tea.Cmd {
+func (m *Model) Selection() common.SelectionSnapshot {
 	if len(m.rows) == 0 {
-		return nil
+		return common.SelectionSnapshot{}
 	}
-	return m.context.SetSelectedItem(context.SelectedOperation{OperationId: m.rows[m.cursor].OperationId})
+	return common.SelectionSnapshot{
+		Highlighted: context.SelectedOperation{OperationId: m.rows[m.cursor].OperationId},
+	}
 }
 
 func (m *Model) search(startIndex int, backward bool) int {
@@ -200,7 +199,7 @@ func (m *Model) search(startIndex int, backward bool) int {
 }
 
 func (m *Model) close() tea.Cmd {
-	return tea.Batch(common.Close, common.Refresh, common.SelectionChanged(m.context.SelectedItem))
+	return tea.Batch(common.Close, common.Refresh)
 }
 
 func (m *Model) showDiff(intent intents.OpLogShowDiff) tea.Cmd {
@@ -250,12 +249,16 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 		return len(m.rows[index].Lines)
 	}
 
+	textStyle := common.DefaultPalette.Get("oplog text")
+	selectedStyle := common.DefaultPalette.Get("oplog selected")
+	matchedStyle := common.DefaultPalette.Get("oplog matched")
+
 	renderItem := func(dl *render.DisplayContext, index int, itemRect layout.Rectangle) {
 		row := m.rows[index]
 		isSelected := index == m.cursor
-		styleOverride := m.textStyle
+		styleOverride := textStyle
 		if isSelected {
-			styleOverride = m.selectedStyle
+			styleOverride = selectedStyle
 		}
 
 		y := itemRect.Min.Y
@@ -279,7 +282,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 						if idx > lastEnd {
 							content.WriteString(style.Render(text[lastEnd:idx]))
 						}
-						content.WriteString(m.matchedStyle.Inherit(styleOverride).Render(text[idx : idx+len(lowerSearch)]))
+						content.WriteString(matchedStyle.Inherit(styleOverride).Render(text[idx : idx+len(lowerSearch)]))
 						lastEnd = idx + len(lowerSearch)
 					}
 				} else {
@@ -326,12 +329,9 @@ func (m *Model) load() tea.Cmd {
 
 func New(context *context.MainContext) *Model {
 	m := &Model{
-		context:       context,
-		rows:          nil,
-		cursor:        0,
-		textStyle:     common.DefaultPalette.Get("oplog text"),
-		selectedStyle: common.DefaultPalette.Get("oplog selected"),
-		matchedStyle:  common.DefaultPalette.Get("oplog matched"),
+		context: context,
+		rows:    nil,
+		cursor:  0,
 	}
 	m.listRenderer = render.NewListRenderer(OpLogScrollMsg{})
 	return m

@@ -7,18 +7,18 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
 
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/bindings"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations/ace_jump"
+	"github.com/idursun/jjui/internal/ui/operations/diff_range"
 	"github.com/idursun/jjui/internal/ui/operations/duplicate"
+	"github.com/idursun/jjui/internal/ui/operations/new_between"
 	"github.com/idursun/jjui/internal/ui/operations/revert"
 	"github.com/idursun/jjui/internal/ui/operations/set_parents"
 	"github.com/idursun/jjui/internal/ui/operations/target_picker"
@@ -37,6 +37,7 @@ import (
 	"github.com/idursun/jjui/internal/ui/graph"
 	"github.com/idursun/jjui/internal/ui/operations"
 	"github.com/idursun/jjui/internal/ui/operations/abandon"
+	"github.com/idursun/jjui/internal/ui/operations/absorb"
 	"github.com/idursun/jjui/internal/ui/operations/bookmark"
 	"github.com/idursun/jjui/internal/ui/operations/details"
 	"github.com/idursun/jjui/internal/ui/operations/evolog"
@@ -45,16 +46,17 @@ import (
 )
 
 var (
-	_ common.Focusable       = (*Model)(nil)
-	_ common.Editable        = (*Model)(nil)
-	_ common.ImmediateModel  = (*Model)(nil)
-	_ dispatch.ScopeProvider = (*Model)(nil)
+	_ common.Focusable         = (*Model)(nil)
+	_ common.Editable          = (*Model)(nil)
+	_ common.ImmediateModel    = (*Model)(nil)
+	_ common.ScopeProvider     = (*Model)(nil)
+	_ common.SelectionProvider = (*Model)(nil)
 )
 
 type Model struct {
 	rows                   []parser.Row
 	tag                    atomic.Uint64
-	revisionToSelect       string
+	pendingReload          revisionReloadState
 	offScreenRows          []parser.Row
 	streamer               *graph.GraphStreamer
 	hasMore                bool
@@ -68,12 +70,15 @@ type Model struct {
 	previousOpLogId        string
 	isLoading              bool
 	displayContextRenderer *DisplayContextRenderer
-	textStyle              lipgloss.Style
-	dimmedStyle            lipgloss.Style
-	selectedStyle          lipgloss.Style
-	matchedStyle           lipgloss.Style
 	ensureCursorView       bool
 	requestInFlight        bool
+	checkedRevisions       map[string]appContext.SelectedRevision
+}
+
+type revisionReloadState struct {
+	tag              uint64
+	selectedRevision string
+	keepSelections   bool
 }
 
 type revisionsMsg struct {
@@ -104,16 +109,15 @@ func (v ViewportScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 }
 
 type updateRevisionsMsg struct {
-	rows             []parser.Row
-	selectedRevision string
+	rows []parser.Row
+	tag  uint64
 }
 
 type streamingReadyMsg struct {
-	streamer         *graph.GraphStreamer
-	selectedRevision string
-	tag              uint64
-	err              error
-	output           string
+	streamer *graph.GraphStreamer
+	tag      uint64
+	err      error
+	output   string
 }
 
 type appendRowsBatchMsg struct {
@@ -182,7 +186,7 @@ func (m *Model) popLayer() tea.Cmd {
 	if len(m.layers) > 0 {
 		m.layers = m.layers[:len(m.layers)-1]
 	}
-	return m.updateSelection()
+	return nil
 }
 
 func (m *Model) resetOperations() {
@@ -194,14 +198,7 @@ func (m *Model) setBaseOperation(op operations.Operation) tea.Cmd {
 	m.baseOp = op
 	m.layers = nil
 
-	var cmds []tea.Cmd
-	cmds = append(cmds, op.Init())
-	if cur := m.SelectedRevision(); cur != nil {
-		if tracked, ok := op.(operations.TracksSelectedRevision); ok {
-			cmds = append(cmds, tracked.SetSelectedRevision(cur))
-		}
-	}
-	return tea.Batch(cmds...)
+	return op.Init()
 }
 
 func (m *Model) baseOperation() operations.Operation {
@@ -254,6 +251,21 @@ func (m *Model) IsFocused() bool {
 	return false
 }
 
+func (m *Model) baseOperationRendersEmbedded() bool {
+	op := m.baseOperation()
+	embedded, ok := op.(operations.EmbeddedOperation)
+	if !ok {
+		return false
+	}
+	commit := m.SelectedRevision()
+	if commit == nil {
+		return false
+	}
+	return embedded.CanEmbed(commit, operations.RenderPositionBefore) ||
+		embedded.CanEmbed(commit, operations.RenderPositionAfter) ||
+		embedded.CanEmbed(commit, operations.RenderOverDescription)
+}
+
 func (m *Model) InNormalMode() bool {
 	_, isDefault := m.baseOperation().(*operations.Default)
 	return isDefault && len(m.layers) == 0
@@ -263,24 +275,24 @@ func (m *Model) HasQuickSearch() bool {
 	return m.quickSearch != ""
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	var ret []dispatch.Scope
+func (m *Model) Scopes() []common.Scope {
+	var ret []common.Scope
 	for i := len(m.layers) - 1; i >= 0; i-- {
-		if lp, ok := m.layers[i].(dispatch.ScopeProvider); ok {
+		if lp, ok := m.layers[i].(common.ScopeProvider); ok {
 			ret = append(ret, lp.Scopes()...)
 		}
 	}
-	if lp, ok := m.baseOperation().(dispatch.ScopeProvider); ok {
+	if lp, ok := m.baseOperation().(common.ScopeProvider); ok {
 		ret = append(ret, lp.Scopes()...)
 	}
 
-	leak := dispatch.LeakAll
+	leak := common.LeakAll
 	if m.IsEditing() {
-		leak = dispatch.LeakNone
+		leak = common.LeakNone
 	}
 
 	if m.quickSearch != "" {
-		ret = append(ret, dispatch.Scope{
+		ret = append(ret, common.Scope{
 			Name:    actions.ScopeQuickSearch,
 			Leak:    leak,
 			Handler: m,
@@ -292,7 +304,7 @@ func (m *Model) Scopes() []dispatch.Scope {
 		scope = ""
 	}
 
-	ret = append(ret, dispatch.Scope{
+	ret = append(ret, common.Scope{
 		Name:    scope,
 		Leak:    leak,
 		Handler: m,
@@ -309,14 +321,11 @@ func (m *Model) SelectedRevision() *jj.Commit {
 
 func (m *Model) SelectedRevisions() jj.SelectedRevisions {
 	var selected []*jj.Commit
-	ids := make(map[string]bool)
-	for _, ci := range m.context.CheckedItems {
-		if rev, ok := ci.(appContext.SelectedRevision); ok {
-			ids[rev.CommitId] = true
-		}
-	}
 	for _, row := range m.rows {
-		if _, ok := ids[row.Commit.CommitId]; ok {
+		if row.Commit == nil {
+			continue
+		}
+		if _, ok := m.checkedRevisions[row.Commit.CommitId]; ok {
 			selected = append(selected, row.Commit)
 		}
 	}
@@ -327,6 +336,63 @@ func (m *Model) SelectedRevisions() jj.SelectedRevisions {
 	return jj.NewSelectedRevisions(selected...)
 }
 
+func (m *Model) Selection() common.SelectionSnapshot {
+	var snapshot common.SelectionSnapshot
+
+	if provider, ok := m.activeModel().(common.SelectionProvider); ok {
+		child := provider.Selection()
+		snapshot.Highlighted = child.Highlighted
+		snapshot.Checked = append(snapshot.Checked, child.Checked...)
+	}
+
+	if snapshot.Highlighted == nil {
+		if rev := m.SelectedRevision(); rev != nil {
+			snapshot.Highlighted = appContext.SelectedRevision{
+				ChangeId: rev.GetChangeId(),
+				CommitId: rev.CommitId,
+			}
+		}
+	}
+
+	for _, item := range m.checkedRevisionItems() {
+		snapshot.Checked = append(snapshot.Checked, item)
+	}
+	return snapshot
+}
+
+func (m *Model) checkedRevisionItems() []common.SelectedItem {
+	items := make([]common.SelectedItem, 0, len(m.checkedRevisions))
+	for _, row := range m.rows {
+		if row.Commit == nil {
+			continue
+		}
+		if item, ok := m.checkedRevisions[row.Commit.CommitId]; ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func (m *Model) checkedRevisionMap() map[string]bool {
+	selected := make(map[string]bool, len(m.checkedRevisions))
+	for _, item := range m.checkedRevisions {
+		selected[item.ChangeId] = true
+	}
+	return selected
+}
+
+func (m *Model) toggleCheckedRevision(item appContext.SelectedRevision) {
+	if _, ok := m.checkedRevisions[item.CommitId]; ok {
+		delete(m.checkedRevisions, item.CommitId)
+		return
+	}
+	m.checkedRevisions[item.CommitId] = item
+}
+
+func (m *Model) clearCheckedRevisions() {
+	clear(m.checkedRevisions)
+}
+
 func (m *Model) Init() tea.Cmd {
 	return common.RefreshAndSelect("@")
 }
@@ -335,29 +401,15 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	if k, ok := msg.(revisionsMsg); ok {
 		msg = k.msg
 	}
-	cmd := m.internalUpdate(msg)
 
-	if curSelected := m.SelectedRevision(); curSelected != nil {
-		if tracked, ok := m.baseOperation().(operations.TracksSelectedRevision); ok {
-			cmd = tea.Batch(cmd, tracked.SetSelectedRevision(curSelected))
-		}
-		for _, layer := range m.layers {
-			if tracked, ok := layer.(operations.TracksSelectedRevision); ok {
-				cmd = tea.Batch(cmd, tracked.SetSelectedRevision(curSelected))
-			}
-		}
-	}
-
-	return cmd
-}
-
-func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case intents.Intent:
 		if cmd, handled := m.HandleIntent(msg); handled {
 			return cmd
 		}
 		return m.activeModel().Update(msg)
+	case common.SelectionChangedMsg:
+		return m.updateOperations(msg)
 	case ItemClickedMsg:
 		// Don't allow changing selection if the operation is editing (e.g. describe)
 		if m.IsEditing() {
@@ -374,12 +426,12 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 			m.SetCursor(msg.Index)
 			if commit := m.rows[msg.Index].Commit; commit != nil {
 				item := appContext.SelectedRevision{ChangeId: commit.GetChangeId(), CommitId: commit.CommitId}
-				m.context.ToggleCheckedItem(item)
+				m.toggleCheckedRevision(item)
 			}
 		default:
 			m.SetCursor(msg.Index)
 		}
-		return m.updateSelection()
+		return nil
 	case ViewportScrollMsg:
 		if msg.Horizontal {
 			return nil
@@ -391,20 +443,20 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 			return m.popLayer()
 		}
 		m.resetOperations()
-		return m.updateSelection()
+		return nil
 	case common.RestoreOperationMsg:
 		if op, ok := msg.Operation.(operations.Operation); ok {
 			m.baseOp = op
 			m.layers = nil
-			return m.updateSelection()
+			return nil
 		}
 		m.resetOperations()
-		return m.updateSelection()
+		return nil
 	case common.StartAceJumpMsg:
 		cmd, _ := m.HandleIntent(intents.StartAceJump{})
 		return cmd
 	case common.OpenTargetPickerMsg:
-		return m.pushLayer(target_picker.NewModel(m.context))
+		return m.pushLayer(target_picker.NewModel(m.context, msg.Payload, msg.Sources...))
 	case target_picker.TargetSelectedMsg:
 		m.popLayer()
 		return m.baseOperation().Update(msg)
@@ -414,7 +466,7 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 		m.quickSearch = strings.ToLower(string(msg))
 		m.SetCursor(m.search(0, false))
 		m.resetOperations()
-		return m.updateSelection()
+		return nil
 	case common.CommandCompletedMsg:
 		m.output = msg.Output
 		m.err = msg.Err
@@ -436,11 +488,24 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 			SelectedRevision: msg.SelectedRevision,
 		}), m.activeModel().Update(msg))
 	case updateRevisionsMsg:
+		if msg.tag != m.tag.Load() {
+			return nil
+		}
+		previousSelectedRevision := m.SelectedRevision()
 		m.isLoading = false
-		m.updateGraphRows(msg.rows, msg.selectedRevision)
-		return tea.Batch(m.highlightChanges, m.updateSelection(), func() tea.Msg {
+		reloadState := revisionReloadState{}
+		if m.pendingReload.tag == msg.tag {
+			reloadState = m.pendingReload
+			m.pendingReload = revisionReloadState{}
+		}
+		m.updateGraphRows(msg.rows, reloadState.selectedRevision, !reloadState.keepSelections)
+		cmds := []tea.Cmd{m.highlightChanges, func() tea.Msg {
 			return common.UpdateRevisionsSuccessMsg{}
-		})
+		}}
+		if cmd := m.operationSelectionChanged(previousSelectedRevision); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return tea.Batch(cmds...)
 	case streamingReadyMsg:
 		if msg.tag != m.tag.Load() {
 			if msg.streamer != nil {
@@ -468,17 +533,18 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 
 		m.streamer = msg.streamer
 		m.offScreenRows = nil
-		m.revisionToSelect = msg.selectedRevision
 		m.hasMore = true
 		m.requestInFlight = false
 
 		// If the revision to select is not set, use the currently selected item
-		if m.revisionToSelect == "" {
+		if m.pendingReload.tag == msg.tag && m.pendingReload.selectedRevision == "" {
 			switch selected := m.context.SelectedItem.(type) {
 			case appContext.SelectedRevision:
-				m.revisionToSelect = selected.CommitId
+				m.pendingReload.selectedRevision = selected.ChangeId
 			case appContext.SelectedFile:
-				m.revisionToSelect = selected.CommitId
+				m.pendingReload.selectedRevision = selected.CommitId
+			case appContext.SelectedCommit:
+				m.pendingReload.selectedRevision = selected.CommitId
 			}
 		}
 		log.Println("Starting streaming revisions with tag:", msg.tag)
@@ -508,26 +574,48 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 			m.streamer.Close()
 		}
 
+		reloadState := revisionReloadState{}
+		if m.pendingReload.tag == msg.tag {
+			reloadState = m.pendingReload
+			m.pendingReload = revisionReloadState{}
+		}
 		currentSelectedRevision := m.SelectedRevision()
 		m.rows = m.offScreenRows
-		if m.revisionToSelect != "" {
-			m.SetCursor(m.selectRevision(m.revisionToSelect))
-			m.revisionToSelect = ""
+		targetCursor := -1
+		if reloadState.selectedRevision != "" {
+			if idx := m.selectRevisionExact(reloadState.selectedRevision); idx != -1 {
+				targetCursor = idx
+			}
 		}
 
-		if m.cursor == -1 && currentSelectedRevision != nil {
-			m.SetCursor(m.selectRevision(currentSelectedRevision.GetChangeId()))
+		if targetCursor == -1 && currentSelectedRevision != nil {
+			if idx := m.selectRevisionExact(currentSelectedRevision.GetChangeId()); idx != -1 {
+				targetCursor = idx
+			}
 		}
 
-		if (m.cursor < 0 || m.cursor >= len(m.rows)) && len(m.rows) > 0 {
-			m.SetCursor(0)
+		if targetCursor == -1 && len(m.rows) > 0 {
+			if m.cursor < 0 || m.cursor >= len(m.rows) {
+				targetCursor = 0
+			}
 		}
 
-		cmds := []tea.Cmd{m.highlightChanges, m.updateSelection()}
+		if targetCursor != -1 {
+			if reloadState.keepSelections {
+				m.cursor = targetCursor
+			} else {
+				m.SetCursor(targetCursor)
+			}
+		}
+
+		cmds := []tea.Cmd{m.highlightChanges}
 		if len(m.offScreenRows) > 0 {
 			cmds = append(cmds, func() tea.Msg {
 				return common.UpdateRevisionsSuccessMsg{}
 			})
+		}
+		if cmd := m.operationSelectionChanged(currentSelectedRevision); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 		return tea.Batch(cmds...)
 	}
@@ -565,17 +653,41 @@ func (m *Model) internalUpdate(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+func (m *Model) updateOperations(msg tea.Msg) tea.Cmd {
+	cmds := []tea.Cmd{m.baseOperation().Update(msg)}
+	for _, layer := range m.layers {
+		cmds = append(cmds, layer.Update(msg))
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *Model) operationSelectionChanged(previous *jj.Commit) tea.Cmd {
+	current := m.SelectedRevision()
+	if current == nil {
+		return nil
+	}
+	if previous.Equal(current) {
+		return nil
+	}
+	return m.updateOperations(common.SelectionChangedMsg{
+		Item: common.SelectedRevision{
+			ChangeId: current.GetChangeId(),
+			CommitId: current.CommitId,
+		},
+	})
+}
+
 func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	// Cancel has special handling: delegate to op first, then clear selections
 	if _, ok := intent.(intents.Cancel); ok {
-		if h, ok := m.activeModel().(dispatch.ScopeHandler); ok {
+		if h, ok := m.activeModel().(common.ScopeHandler); ok {
 			if cmd, handled := h.HandleIntent(intent); handled {
 				return cmd, true
 			}
 		}
 		// Clear checked items and reset to default operation
-		if len(m.context.CheckedItems) > 0 || !m.InNormalMode() {
-			m.context.ClearCheckedItems(reflect.TypeFor[appContext.SelectedRevision]())
+		if len(m.checkedRevisions) > 0 || !m.InNormalMode() {
+			m.clearCheckedRevisions()
 			m.resetOperations()
 			return nil, true
 		}
@@ -600,7 +712,7 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	}
 
 	// Try the current operation first
-	if h, ok := m.activeModel().(dispatch.ScopeHandler); ok {
+	if h, ok := m.activeModel().(common.ScopeHandler); ok {
 		if cmd, handled := h.HandleIntent(intent); handled {
 			return cmd, true
 		}
@@ -614,7 +726,7 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		return m.startSquash(intent), true
 	case intents.OpenInlineDescribe:
 		return m.startInlineDescribe(intent), true
-	case intents.Absorb:
+	case intents.OpenAbsorb:
 		return m.startAbsorb(intent), true
 	case intents.OpenAbandon:
 		return m.startAbandon(intent), true
@@ -633,12 +745,15 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	case intents.OpenSetParents:
 		return m.startSetParents(intent), true
 	case intents.OpenSetBookmark:
-		return m.startBookmarkSet(), true
+		return m.startBookmarkSet(intent), true
 	case intents.RevisionsToggleSelect:
-		commit := m.rows[m.cursor].Commit
+		commit := m.SelectedRevision()
+		if commit == nil {
+			return nil, true
+		}
 		changeId := commit.GetChangeId()
 		item := appContext.SelectedRevision{ChangeId: changeId, CommitId: commit.CommitId}
-		m.context.ToggleCheckedItem(item)
+		m.toggleCheckedRevision(item)
 		return nil, true
 	case intents.Navigate:
 		return m.navigate(intent), true
@@ -652,6 +767,10 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		return m.startSplit(intent), true
 	case intents.OpenRebase:
 		return m.startRebase(intent), true
+	case intents.OpenDiffRange:
+		return m.setBaseOperation(diff_range.New(m.context, m.SelectedRevision(), m.SelectedRevision())), true
+	case intents.OpenNewBetween:
+		return m.setBaseOperation(new_between.New(m.context, m.SelectedRevisions(), m.SelectedRevision())), true
 	case intents.Refresh:
 		return m.refresh(intent), true
 	case intents.QuickSearchCycle:
@@ -660,7 +779,7 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 			offset = -1
 		}
 		m.SetCursor(m.search(m.cursor+offset, intent.Reverse))
-		return m.updateSelection(), true
+		return nil, true
 	case intents.RevisionsQuickSearchClear:
 		m.quickSearch = ""
 		return nil, true
@@ -668,24 +787,29 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (m *Model) startBookmarkSet() tea.Cmd {
+func (m *Model) startBookmarkSet(intent intents.OpenSetBookmark) tea.Cmd {
 	rev := m.SelectedRevision()
 	if rev == nil {
 		return nil
 	}
-	return m.setBaseOperation(bookmark.NewSetBookmarkOperation(m.context, rev.GetChangeId()))
+	return m.setBaseOperation(bookmark.NewSetBookmarkOperation(m.context, rev.GetChangeId(), intent.Value))
 }
 
 func (m *Model) refresh(intent intents.Refresh) tea.Cmd {
 	if !intent.KeepSelections {
-		m.context.ClearCheckedItems(reflect.TypeFor[appContext.SelectedRevision]())
+		m.clearCheckedRevisions()
 	}
 	m.isLoading = true
-	if config.Current.Revisions.LogBatching {
-		currentTag := m.tag.Add(1)
-		return m.loadStreaming(m.context.CurrentRevset, intent.SelectedRevision, currentTag)
+	currentTag := m.tag.Add(1)
+	m.pendingReload = revisionReloadState{
+		tag:              currentTag,
+		selectedRevision: intent.SelectedRevision,
+		keepSelections:   intent.KeepSelections,
 	}
-	return m.load(m.context.CurrentRevset, intent.SelectedRevision)
+	if config.Current.Revisions.LogBatching {
+		return m.loadStreaming(m.context.CurrentRevset, currentTag)
+	}
+	return m.load(m.context.CurrentRevset, currentTag)
 }
 
 func (m *Model) openDetails(_ intents.OpenDetails) tea.Cmd {
@@ -706,22 +830,13 @@ func (m *Model) startSquash(intent intents.OpenSquash) tea.Cmd {
 	}
 
 	parent, _ := m.context.RunCommandImmediate(jj.GetParent(selected))
-	parentIdx := m.selectRevision(string(parent))
+	parentIdx := m.selectRevisionExact(string(parent))
 	if parentIdx != -1 {
 		m.SetCursor(parentIdx)
 	} else if m.cursor < len(m.rows)-1 {
 		m.SetCursor(m.cursor + 1)
 	}
-	cmd := m.setBaseOperation(squash.NewOperation(m.context, selected, squash.WithFiles(intent.Files)))
-	// Reset file-level selection left over from details so updateSelection
-	// (and subsequent navigations) can update the revision-level selection.
-	if cur := m.SelectedRevision(); cur != nil {
-		m.context.SelectedItem = appContext.SelectedRevision{
-			ChangeId: cur.GetChangeId(),
-			CommitId: cur.CommitId,
-		}
-	}
-	return tea.Batch(cmd, m.updateSelection())
+	return m.setBaseOperation(squash.NewOperation(m.context, selected, m.SelectedRevision(), squash.WithFiles(intent.Files)))
 }
 
 func (m *Model) startRebase(intent intents.OpenRebase) tea.Cmd {
@@ -734,7 +849,7 @@ func (m *Model) startRebase(intent intents.OpenRebase) tea.Cmd {
 	}
 
 	source := rebaseSourceFromIntent(intent.Source)
-	return m.setBaseOperation(rebase.NewOperation(m.context, selected, source, intent.Target))
+	return m.setBaseOperation(rebase.NewOperation(m.context, selected, m.SelectedRevision(), source, intent.Target))
 }
 
 func (m *Model) startRevert(intent intents.OpenRevert) tea.Cmd {
@@ -746,7 +861,7 @@ func (m *Model) startRevert(intent intents.OpenRevert) tea.Cmd {
 		return nil
 	}
 
-	return m.setBaseOperation(revert.NewOperation(m.context, selected, intent.Target))
+	return m.setBaseOperation(revert.NewOperation(m.context, selected, m.SelectedRevision(), intent.Target))
 }
 
 func rebaseSourceFromIntent(source intents.RebaseSource) rebase.Source {
@@ -769,7 +884,7 @@ func (m *Model) startDuplicate(intent intents.OpenDuplicate) tea.Cmd {
 		return nil
 	}
 
-	return m.setBaseOperation(duplicate.NewOperation(m.context, selected, intents.ModeTargetDestination))
+	return m.setBaseOperation(duplicate.NewOperation(m.context, selected, m.SelectedRevision(), intents.ModeTargetDestination))
 }
 
 func (m *Model) startSetParents(intent intents.OpenSetParents) tea.Cmd {
@@ -781,7 +896,7 @@ func (m *Model) startSetParents(intent intents.OpenSetParents) tea.Cmd {
 		return nil
 	}
 
-	return m.setBaseOperation(set_parents.NewModel(m.context, commit))
+	return m.setBaseOperation(set_parents.NewModel(m.context, commit, m.SelectedRevision()))
 }
 
 func (m *Model) startNew(intent intents.StartNew) tea.Cmd {
@@ -818,7 +933,7 @@ func (m *Model) startDiffEdit(intent intents.DiffEdit) tea.Cmd {
 	return m.context.RunInteractiveCommand(jj.DiffEdit(commit.GetChangeId()), common.Refresh)
 }
 
-func (m *Model) startAbsorb(intent intents.Absorb) tea.Cmd {
+func (m *Model) startAbsorb(intent intents.OpenAbsorb) tea.Cmd {
 	commit := intent.Selected
 	if commit == nil {
 		commit = m.SelectedRevision()
@@ -826,7 +941,7 @@ func (m *Model) startAbsorb(intent intents.Absorb) tea.Cmd {
 	if commit == nil {
 		return nil
 	}
-	return m.context.RunCommand(jj.Absorb(commit.GetChangeId()), common.Refresh)
+	return m.setBaseOperation(absorb.NewOperation(m.context, commit, m.SelectedRevision()))
 }
 
 func (m *Model) startAbandon(intent intents.OpenAbandon) tea.Cmd {
@@ -837,7 +952,7 @@ func (m *Model) startAbandon(intent intents.OpenAbandon) tea.Cmd {
 	if len(selected.Revisions) == 0 {
 		return nil
 	}
-	return m.setBaseOperation(abandon.NewOperation(m.context, selected))
+	return m.setBaseOperation(abandon.NewOperation(m.context, selected, m.SelectedRevision()))
 }
 
 func (m *Model) navigate(intent intents.Navigate) tea.Cmd {
@@ -854,37 +969,37 @@ func (m *Model) navigate(intent intents.Navigate) tea.Cmd {
 		allowStream = *intent.AllowStream
 	}
 
-	if intent.ChangeID != "" || intent.FallbackID != "" {
-		idx := m.selectRevision(intent.ChangeID)
-		if idx == -1 && intent.FallbackID != "" {
-			idx = m.selectRevision(intent.FallbackID)
+	if intent.ChangeID != "" {
+		idx := m.selectRevisionExact(intent.ChangeID)
+		if idx == -1 {
+			idx = m.resolveNavigationRevision(intent.ChangeID)
 		}
 		if idx == -1 {
 			return nil
 		}
 		m.ensureCursorView = ensureView
 		m.SetCursor(idx)
-		return m.updateSelection()
+		return nil
 	}
 
 	switch intent.Target {
 	case intents.TargetParent:
 		m.jumpToParent(m.SelectedRevisions())
 		m.ensureCursorView = ensureView
-		return m.updateSelection()
+		return nil
 	case intents.TargetWorkingCopy:
-		if idx := m.selectRevision("@"); idx != -1 {
+		if idx := m.selectRevisionExact("@"); idx != -1 {
 			m.SetCursor(idx)
 		}
 		m.ensureCursorView = ensureView
-		return m.updateSelection()
+		return nil
 	case intents.TargetChild:
 		immediate, _ := m.context.RunCommandImmediate(jj.GetFirstChild(m.SelectedRevision()))
-		if idx := m.selectRevision(string(immediate)); idx != -1 {
+		if idx := m.selectRevisionExact(string(immediate)); idx != -1 {
 			m.SetCursor(idx)
 		}
 		m.ensureCursorView = ensureView
-		return m.updateSelection()
+		return nil
 	}
 
 	delta := intent.Delta
@@ -926,7 +1041,22 @@ func (m *Model) navigate(intent intents.Navigate) tea.Cmd {
 
 	m.SetCursor(newCursor)
 	m.ensureCursorView = ensureView
-	return m.updateSelection()
+	return nil
+}
+
+func (m *Model) resolveNavigationRevision(revision string) int {
+	output, err := m.context.RunCommandImmediate(jj.ResolveRevisionID(revision))
+	if err != nil {
+		return -1
+	}
+
+	parts := strings.SplitN(string(output), ";", 2)
+	for _, candidate := range parts {
+		if idx := m.selectRevisionExact(strings.TrimSpace(candidate)); idx != -1 {
+			return idx
+		}
+	}
+	return -1
 }
 
 func (m *Model) startDescribe(intent intents.Describe) tea.Cmd {
@@ -973,8 +1103,9 @@ func (m *Model) showDiff(intent intents.ShowDiff) tea.Cmd {
 	}
 	changeId := commit.GetChangeId()
 	return func() tea.Msg {
-		output, _ := m.context.RunCommandImmediate(jj.Diff(changeId, ""))
-		return intents.DiffShow{Content: string(output)}
+		args := jj.Diff(changeId, "")
+		output, _ := m.context.RunCommandImmediate(args)
+		return intents.DiffShow{Content: string(output), Args: args}
 	}
 }
 
@@ -987,20 +1118,6 @@ func (m *Model) startSplit(intent intents.StartSplit) tea.Cmd {
 		return nil
 	}
 	return m.context.RunInteractiveCommand(jj.Split(commit.GetChangeId(), intent.Files, intent.IsParallel, intent.IsInteractive), common.Refresh)
-}
-
-func (m *Model) updateSelection() tea.Cmd {
-	// Don't override file-level selections (from Details panel)
-	if _, isFile := m.context.SelectedItem.(appContext.SelectedFile); isFile && !m.InNormalMode() {
-		return nil
-	}
-	if selectedRevision := m.SelectedRevision(); selectedRevision != nil {
-		return m.context.SetSelectedItem(appContext.SelectedRevision{
-			ChangeId: selectedRevision.GetChangeId(),
-			CommitId: selectedRevision.CommitId,
-		})
-	}
-	return nil
 }
 
 func (m *Model) highlightChanges() tea.Msg {
@@ -1031,7 +1148,7 @@ func (m *Model) highlightChanges() tea.Msg {
 	return nil
 }
 
-func (m *Model) updateGraphRows(rows []parser.Row, selectedRevision string) {
+func (m *Model) updateGraphRows(rows []parser.Row, selectedRevision string, requestCursorView bool) {
 	if rows == nil {
 		rows = []parser.Row{}
 	}
@@ -1043,19 +1160,34 @@ func (m *Model) updateGraphRows(rows []parser.Row, selectedRevision string) {
 	m.rows = rows
 
 	if len(m.rows) > 0 {
-		m.SetCursor(m.selectRevision(currentSelectedRevision))
-		if m.cursor == -1 {
-			m.SetCursor(m.selectRevision("@"))
+		idx := m.selectRevisionExact(currentSelectedRevision)
+		if idx == -1 {
+			idx = m.selectRevisionExact("@")
 		}
-		if m.cursor == -1 {
-			m.SetCursor(0)
+		if idx == -1 {
+			idx = 0
+		}
+		if requestCursorView {
+			m.SetCursor(idx)
+		} else {
+			m.cursor = idx
 		}
 	} else {
-		m.SetCursor(0)
+		m.cursor = 0
 	}
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	textStyle := common.DefaultPalette.Get("revisions text")
+	dimmedStyle := common.DefaultPalette.Get("revisions dimmed")
+	selectedStyle := common.DefaultPalette.Get("revisions selected")
+	matchedStyle := common.DefaultPalette.Get("revisions matched")
+
+	m.displayContextRenderer.textStyle = textStyle
+	m.displayContextRenderer.dimmedStyle = dimmedStyle
+	m.displayContextRenderer.selectedStyle = selectedStyle
+	m.displayContextRenderer.matchedStyle = matchedStyle
+
 	if len(m.rows) == 0 {
 		content := ""
 		if m.isLoading {
@@ -1068,7 +1200,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	}
 
 	// Set selections
-	m.displayContextRenderer.SetSelections(m.context.GetSelectedRevisions())
+	m.displayContextRenderer.SetSelections(m.checkedRevisionMap())
 
 	renderOp := m.baseOperation()
 
@@ -1076,6 +1208,15 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	var segRenderer operations.SegmentRenderer
 	if sr, ok := m.activeModel().(operations.SegmentRenderer); ok {
 		segRenderer = sr
+	}
+
+	// Let the base operation contribute frame-level draws before the list unless
+	// it is rendered inside the selected revision. Embedded operations register
+	// draw and mouse state when the list renderer calls ViewRect with the row
+	// rectangle; rendering them here would register a second, viewport-relative
+	// set of interactions.
+	if !m.baseOperationRendersEmbedded() {
+		renderOp.ViewRect(dl, box)
 	}
 
 	// Render to DisplayContext
@@ -1100,7 +1241,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	m.ensureCursorView = false
 }
 
-func (m *Model) load(revset string, selectedRevision string) tea.Cmd {
+func (m *Model) load(revset string, tag uint64) tea.Cmd {
 	return func() tea.Msg {
 		output, err := m.context.RunCommandImmediate(jj.Log(revset, config.Current.Limit, m.context.JJConfig.Templates.Log))
 		if err != nil {
@@ -1110,11 +1251,14 @@ func (m *Model) load(revset string, selectedRevision string) tea.Cmd {
 			}
 		}
 		rows := parser.ParseRows(bytes.NewReader(output))
-		return updateRevisionsMsg{rows, selectedRevision}
+		return updateRevisionsMsg{
+			rows: rows,
+			tag:  tag,
+		}
 	}
 }
 
-func (m *Model) loadStreaming(revset string, selectedRevision string, tag uint64) tea.Cmd {
+func (m *Model) loadStreaming(revset string, tag uint64) tea.Cmd {
 	return func() tea.Msg {
 		if m.tag.Load() != tag {
 			return nil
@@ -1132,11 +1276,10 @@ func (m *Model) loadStreaming(revset string, selectedRevision string, tag uint64
 		}
 
 		return streamingReadyMsg{
-			streamer:         streamer,
-			selectedRevision: selectedRevision,
-			tag:              tag,
-			err:              err,
-			output:           errMsg,
+			streamer: streamer,
+			tag:      tag,
+			err:      err,
+			output:   errMsg,
 		}
 	}
 }
@@ -1150,7 +1293,11 @@ func (m *Model) requestMoreRows(tag uint64) tea.Cmd {
 	streamer := m.streamer
 	return func() tea.Msg {
 		batch := streamer.RequestMore()
-		return appendRowsBatchMsg{batch.Rows, batch.HasMore, tag}
+		return appendRowsBatchMsg{
+			rows:    batch.Rows,
+			hasMore: batch.HasMore,
+			tag:     tag,
+		}
 	}
 }
 
@@ -1164,18 +1311,17 @@ func streamingWarningCmd(output string, err error) tea.Cmd {
 	return intents.Invoke(intents.AddMessage{Text: output, Err: err})
 }
 
-func (m *Model) selectRevision(revision string) int {
+func (m *Model) selectRevisionExact(revision string) int {
 	eqFold := func(other string) bool {
 		return strings.EqualFold(other, revision)
 	}
 
-	idx := slices.IndexFunc(m.rows, func(row parser.Row) bool {
+	return slices.IndexFunc(m.rows, func(row parser.Row) bool {
 		if revision == "@" {
 			return row.Commit.IsWorkingCopy
 		}
 		return eqFold(row.Commit.GetChangeId()) || eqFold(row.Commit.ChangeId) || eqFold(row.Commit.CommitId)
 	})
-	return idx
 }
 
 func (m *Model) search(startIndex int, backward bool) int {
@@ -1200,18 +1346,15 @@ func (m *Model) GetCommitIds() []string {
 
 func New(c *appContext.MainContext) *Model {
 	m := Model{
-		context:       c,
-		rows:          nil,
-		offScreenRows: nil,
-		baseOp:        operations.NewDefault(),
-		layers:        nil,
-		cursor:        0,
-		textStyle:     common.DefaultPalette.Get("revisions text"),
-		dimmedStyle:   common.DefaultPalette.Get("revisions dimmed"),
-		selectedStyle: common.DefaultPalette.Get("revisions selected"),
-		matchedStyle:  common.DefaultPalette.Get("revisions matched"),
+		context:          c,
+		rows:             nil,
+		offScreenRows:    nil,
+		baseOp:           operations.NewDefault(),
+		layers:           nil,
+		cursor:           0,
+		checkedRevisions: make(map[string]appContext.SelectedRevision),
 	}
-	m.displayContextRenderer = NewDisplayContextRenderer(m.textStyle, m.dimmedStyle, m.selectedStyle, m.matchedStyle)
+	m.displayContextRenderer = NewDisplayContextRenderer()
 	return &m
 }
 
@@ -1222,7 +1365,7 @@ func (m *Model) rangeSelect(to int) {
 		if i >= 0 && i < len(m.rows) {
 			if commit := m.rows[i].Commit; commit != nil {
 				item := appContext.SelectedRevision{ChangeId: commit.GetChangeId(), CommitId: commit.CommitId}
-				m.context.ToggleCheckedItem(item)
+				m.toggleCheckedRevision(item)
 			}
 		}
 	}
@@ -1231,7 +1374,7 @@ func (m *Model) rangeSelect(to int) {
 
 func (m *Model) jumpToParent(revisions jj.SelectedRevisions) {
 	immediate, _ := m.context.RunCommandImmediate(jj.GetParent(revisions))
-	parentIndex := m.selectRevision(string(immediate))
+	parentIndex := m.selectRevisionExact(string(immediate))
 	if parentIndex != -1 {
 		m.SetCursor(parentIndex)
 	}

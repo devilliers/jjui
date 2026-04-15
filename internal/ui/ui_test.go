@@ -1,21 +1,28 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/idursun/jjui/internal/config"
 	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/jj/source"
 	"github.com/idursun/jjui/internal/scripting"
 	"github.com/idursun/jjui/internal/ui/actions"
 	keybindings "github.com/idursun/jjui/internal/ui/bindings"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/diff"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/git"
 	"github.com/idursun/jjui/internal/ui/help"
+	"github.com/idursun/jjui/internal/ui/input"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations/bookmark"
@@ -23,12 +30,57 @@ import (
 	"github.com/idursun/jjui/internal/ui/operations/details"
 	"github.com/idursun/jjui/internal/ui/operations/rebase"
 	"github.com/idursun/jjui/internal/ui/operations/set_parents"
+	"github.com/idursun/jjui/internal/ui/operations/target_picker"
+	"github.com/idursun/jjui/internal/ui/preview"
 	"github.com/idursun/jjui/internal/ui/render"
 	"github.com/idursun/jjui/internal/ui/revset"
 	"github.com/idursun/jjui/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func activePreview(t *testing.T, model *Model) *preview.Model {
+	t.Helper()
+	scopes := model.splitContainer.Scopes()
+	require.NotEmpty(t, scopes, "expected active split content")
+	previewModel, ok := scopes[0].Handler.(*preview.Model)
+	require.True(t, ok, "expected active split content to be Preview")
+	return previewModel
+}
+
+func showPreview(t *testing.T, model *Model) *preview.Model {
+	t.Helper()
+	model.splitContainer.ShowContent(previewContentID)
+	return activePreview(t, model)
+}
+
+type blankImmediateModel struct{}
+
+func (blankImmediateModel) Init() tea.Cmd { return nil }
+
+func (blankImmediateModel) Update(tea.Msg) tea.Cmd { return nil }
+
+func (blankImmediateModel) ViewRect(*render.DisplayContext, layout.Box) {}
+
+func splitSeparatorX(t *testing.T, model *Model) int {
+	t.Helper()
+	dl := render.NewDisplayContext()
+	model.displayContext = dl
+	box := layout.NewBox(layout.Rect(0, 0, 100, 20))
+	model.renderSplit(blankImmediateModel{}, box)
+	buf := render.NewScreenBuffer(100, 20)
+	dl.Render(buf)
+	view := strings.ReplaceAll(ansi.Strip(buf.Render()), "\r", "")
+	for _, line := range strings.Split(view, "\n") {
+		for x, r := range []rune(line) {
+			if r == '│' && x > 0 && x < 99 {
+				return x
+			}
+		}
+	}
+	t.Fatalf("split separator not rendered:\n%s", view)
+	return -1
+}
 
 func dispatchAction(model *Model, action keybindings.Action, args map[string]any) (tea.Cmd, bool) {
 	result := model.resolver.ResolveAction(action, args)
@@ -37,10 +89,111 @@ func dispatchAction(model *Model, action keybindings.Action, args map[string]any
 	}
 	if result.Intent != nil {
 		scopes := model.dispatchScopes()
-		cmd, handled := dispatch.RouteIntent(scopes, result.Intent)
+		cmd, handled := common.RouteIntent(scopes, result.Intent)
 		return cmd, handled
 	}
 	return nil, result.Consumed
+}
+
+const testLogOutput = "○  _PREFIX:abc123_PREFIX:def456 \x1b[1m\x1b[38;5;5mchild\x1b[0m \x1b[38;5;3mauthor\x1b[39m \x1b[38;5;6m2026-05-05\x1b[39m \x1b[1m\x1b[38;5;4mdef456\x1b[0m\n"
+
+func TestWrapperView_SetsWindowTitleWhenEnabled(t *testing.T) {
+	origSetWindowTitle := config.Current.UI.SetWindowTitle
+	t.Cleanup(func() { config.Current.UI.SetWindowTitle = origSetWindowTitle })
+	config.Current.UI.SetWindowTitle = true
+
+	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
+	ctx.Location = "/tmp/repo"
+	w := &wrapper{ui: &Model{context: ctx}, cachedFrame: "frame"}
+
+	view := w.View()
+
+	assert.Equal(t, "jjui - /tmp/repo", view.WindowTitle)
+}
+
+func TestWrapperView_LeavesWindowTitleEmptyWhenDisabled(t *testing.T) {
+	origSetWindowTitle := config.Current.UI.SetWindowTitle
+	t.Cleanup(func() { config.Current.UI.SetWindowTitle = origSetWindowTitle })
+	config.Current.UI.SetWindowTitle = false
+
+	ctx := test.NewTestContext(test.NewTestCommandRunner(t))
+	ctx.Location = "/tmp/repo"
+	w := &wrapper{ui: &Model{context: ctx}, cachedFrame: "frame"}
+
+	view := w.View()
+
+	assert.Empty(t, view.WindowTitle)
+}
+
+func TestWrapperView_ForwardsCursorFromRenderedFrame(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+	model.width = 80
+	model.height = 20
+	model.stacked = input.NewWithTitle("Prompt", "Text: ", "")
+
+	w := &wrapper{ui: model, render: true}
+	view := w.View()
+
+	require.NotNil(t, view.Cursor)
+	require.NotNil(t, model.frameCursor)
+	assert.Equal(t, model.frameCursor.Position, view.Cursor.Position)
+}
+
+func TestWrapperView_ClearsCursorWhenInlineDescribeCloses(t *testing.T) {
+	origLogBatching := config.Current.Revisions.LogBatching
+	defer func() {
+		config.Current.Revisions.LogBatching = origLogBatching
+	}()
+	config.Current.Revisions.LogBatching = false
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	commandRunner.Expect(jj.Log(ctx.CurrentRevset, config.Current.Limit, ctx.JJConfig.Templates.Log)).SetOutput([]byte(testLogOutput))
+	commandRunner.Expect(jj.GetDescription("abc123")).SetOutput([]byte("old desc"))
+	defer commandRunner.Verify()
+
+	model := NewUI(ctx)
+	model.width = 100
+	model.height = 20
+	test.SimulateModel(model, model.revisions.Update(common.RefreshMsg{SelectedRevision: "abc123"}))
+	require.NotNil(t, model.revisions.SelectedRevision())
+
+	op := describe.NewOperation(ctx, model.revisions.SelectedRevision())
+	model.Update(common.RestoreOperationMsg{Operation: op})
+
+	w := &wrapper{ui: model, render: true}
+	view := w.View()
+	require.NotNil(t, view.Cursor)
+
+	model.Update(common.CloseViewMsg{})
+	w.render = true
+	view = w.View()
+	assert.Nil(t, view.Cursor)
+}
+
+func TestWrapperUpdate_ExecMsgRefreshesCachedCursorBeforeExec(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+	model.width = 80
+	model.height = 20
+	model.stacked = input.NewWithTitle("Prompt", "Text: ", "")
+
+	w := &wrapper{ui: model, render: true}
+	view := w.View()
+	require.NotNil(t, view.Cursor)
+
+	// Simulate the state after Apply cleared focus but before tea.Exec releases
+	// and restores the terminal.
+	model.stacked = nil
+
+	updated, cmd := w.Update(common.ExecMsg{Line: "log", Mode: common.ExecJJ})
+	require.NotNil(t, cmd)
+
+	view = updated.(*wrapper).View()
+	assert.Nil(t, view.Cursor)
 }
 
 func Test_Update_PreviewScrollKeysWorkWhenVisible(t *testing.T) {
@@ -77,31 +230,31 @@ func Test_Update_PreviewScrollKeysWorkWhenVisible(t *testing.T) {
 			ctx := test.NewTestContext(commandRunner)
 
 			model := NewUI(ctx)
-			model.previewModel.SetVisible(true)
+			previewModel := showPreview(t, model)
 
 			var content strings.Builder
 			for range 100 {
 				content.WriteString("line content here\n")
 			}
-			model.previewModel.SetContent(content.String())
+			previewModel.SetContent(content.String())
 
 			// Force internal view port to have a size
-			model.previewModel.ViewRect(render.NewDisplayContext(), layout.NewBox(layout.Rect(0, 0, 100, 50)))
+			previewModel.ViewRect(render.NewDisplayContext(), layout.NewBox(layout.Rect(0, 0, 100, 50)))
 
-			initialYOffset := model.previewModel.YOffset()
+			initialYOffset := previewModel.YOffset()
 
 			// Send the key message
 			model.Update(tc.key)
 
-			newYOffset := model.previewModel.YOffset()
+			newYOffset := previewModel.YOffset()
 			if tc.expectedScroll > 0 {
 				assert.Greater(t, newYOffset, initialYOffset, "expected scroll down for key %s", tc.name)
 			} else {
 				// For scroll up, we need content scrolled down first
-				model.previewModel.Scroll(50) // scroll down first
-				scrolledYOffset := model.previewModel.YOffset()
+				previewModel.Scroll(50) // scroll down first
+				scrolledYOffset := previewModel.YOffset()
 				model.Update(tc.key)
-				newYOffset = model.previewModel.YOffset()
+				newYOffset = previewModel.YOffset()
 				assert.Less(t, newYOffset, scrolledYOffset, "expected scroll up for key %s", tc.name)
 			}
 		})
@@ -109,6 +262,15 @@ func Test_Update_PreviewScrollKeysWorkWhenVisible(t *testing.T) {
 }
 
 func Test_Update_PreviewResizeKeysWorkWhenVisible(t *testing.T) {
+	origPosition := config.Current.Preview.Position
+	origWidth := config.Current.Preview.WidthPercentage
+	config.Current.Preview.Position = "right"
+	config.Current.Preview.WidthPercentage = 50
+	t.Cleanup(func() {
+		config.Current.Preview.Position = origPosition
+		config.Current.Preview.WidthPercentage = origWidth
+	})
+
 	tests := []struct {
 		name           string
 		key            tea.KeyPressMsg
@@ -132,16 +294,16 @@ func Test_Update_PreviewResizeKeysWorkWhenVisible(t *testing.T) {
 			ctx := test.NewTestContext(commandRunner)
 
 			model := NewUI(ctx)
-			model.previewModel.SetVisible(true)
+			showPreview(t, model)
 
-			initialWidth := model.revisionsSplit.State.Percent
+			initialX := splitSeparatorX(t, model)
 			model.Update(tc.key)
-			newWidth := model.revisionsSplit.State.Percent
+			newX := splitSeparatorX(t, model)
 
 			if tc.expectedResize > 0 {
-				assert.Greater(t, newWidth, initialWidth, "expected preview to expand for key %s", tc.name)
+				assert.Less(t, newX, initialX, "expected preview to expand for key %s", tc.name)
 			} else {
-				assert.Less(t, newWidth, initialWidth, "expected preview to shrink for key %s", tc.name)
+				assert.Greater(t, newX, initialX, "expected preview to shrink for key %s", tc.name)
 			}
 		})
 	}
@@ -158,7 +320,7 @@ func Test_UpdateStatus_RevsetEditingShowsRevsetHelp(t *testing.T) {
 
 	// Activate revset editing
 	model.revsetModel.Update(revset.EditRevSetMsg{})
-	assert.True(t, model.revsetModel.Editing, "revset should be in editing mode")
+	assert.True(t, model.revsetModel.IsEditing(), "revset should be in editing mode")
 
 	// Trigger status update
 	model.updateStatus()
@@ -185,7 +347,7 @@ func Test_UpdateStatus_FlashVisibleShowsHistoryModeAndHelp(t *testing.T) {
 	model.Update(intents.CommandHistoryToggle{})
 	model.updateStatus()
 
-	assert.Equal(t, "history", model.status.Mode())
+	assert.Equal(t, "command history", model.status.Mode())
 	entries := help.FlatEntries(model.status.Help())
 	require.Len(t, entries, 3)
 	assert.Equal(t, "j", entries[0].Label)
@@ -371,17 +533,25 @@ func Test_Update_GlobalBindingsFromConfigOverrideLegacyGlobalKeys(t *testing.T) 
 }
 
 func Test_Update_RevisionsEscClearsCheckedSelections_WithDefaultBindings(t *testing.T) {
+	origLogBatching := config.Current.Revisions.LogBatching
+	defer func() {
+		config.Current.Revisions.LogBatching = origLogBatching
+	}()
+	config.Current.Revisions.LogBatching = false
+
 	commandRunner := test.NewTestCommandRunner(t)
 	ctx := test.NewTestContext(commandRunner)
+	commandRunner.Expect(jj.Log(ctx.CurrentRevset, config.Current.Limit, ctx.JJConfig.Templates.Log)).SetOutput([]byte(testLogOutput))
+	defer commandRunner.Verify()
+
 	model := NewUI(ctx)
+	test.SimulateModel(model, model.revisions.Update(common.RefreshMsg{}))
 
-	ctx.AddCheckedItem(common.SelectedRevision{ChangeId: "change-1", CommitId: "commit-1"})
-	ctx.AddCheckedItem(common.SelectedRevision{ChangeId: "change-2", CommitId: "commit-2"})
+	test.SimulateModel(model, model.Update(intents.RevisionsToggleSelect{}))
+	require.Len(t, ctx.CheckedItems, 1, "setup should create a checked revision through the root sync path")
 
-	require.Len(t, ctx.CheckedItems, 2, "setup should create multiple checked revisions")
-
-	cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	assert.Nil(t, cmd, "clearing checked revisions should not emit a follow-up command")
+	cmd := model.Update(intents.Cancel{})
+	test.SimulateModel(model, cmd)
 	assert.Empty(t, ctx.CheckedItems, "esc should clear checked revisions in normal revisions mode")
 }
 
@@ -452,7 +622,7 @@ func Test_Update_SequencePrefixBeatsSingleKeyBinding(t *testing.T) {
 
 	// Completing sequence should trigger ui.open_revset.
 	model.Update(tea.KeyPressMsg{Text: "r", Code: 'r'})
-	assert.True(t, model.revsetModel.Editing)
+	assert.True(t, model.revsetModel.IsEditing())
 }
 
 func Test_Update_PendingSequenceAutoExpandsStatusWithContinuations(t *testing.T) {
@@ -522,10 +692,10 @@ func Test_Update_RevsetEditingInterceptsQuitKey(t *testing.T) {
 	model := NewUI(ctx)
 
 	model.Update(tea.KeyPressMsg{Text: "L", Code: 'L'})
-	assert.True(t, model.revsetModel.Editing)
+	assert.True(t, model.revsetModel.IsEditing())
 
 	cmd := model.Update(tea.KeyPressMsg{Text: "q", Code: 'q'})
-	assert.True(t, model.revsetModel.Editing, "q should be treated as text input while editing revset")
+	assert.True(t, model.revsetModel.IsEditing(), "q should be treated as text input while editing revset")
 	if cmd != nil {
 		msg := cmd()
 		_, quit := msg.(tea.QuitMsg)
@@ -587,11 +757,11 @@ func (m *scopeOnlyStackedModel) Update(msg tea.Msg) tea.Cmd {
 
 func (m *scopeOnlyStackedModel) ViewRect(_ *render.DisplayContext, _ layout.Box) {}
 
-func (m *scopeOnlyStackedModel) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (m *scopeOnlyStackedModel) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    keybindings.ScopeName(m.scope),
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: m,
 		},
 	}
@@ -655,6 +825,18 @@ func Test_Update_BlockingScopeHandledNilCmdDoesNotReceiveRawKeyAgain(t *testing.
 	assert.True(t, ok, "blocking scope should keep the handled intent instead of receiving the raw key")
 }
 
+func Test_Update_AceJumpBeforeFirstRenderDoesNotPanicOnRawKey(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	model.Update(intents.StartAceJump{})
+
+	assert.NotPanics(t, func() {
+		model.Update(tea.KeyPressMsg{Text: "x", Code: 'x'})
+	})
+}
+
 func Test_HandleDispatchedAction_RevisionsScopedActionInRebaseMode(t *testing.T) {
 	commandRunner := test.NewTestCommandRunner(t)
 	ctx := test.NewTestContext(commandRunner)
@@ -663,6 +845,7 @@ func Test_HandleDispatchedAction_RevisionsScopedActionInRebaseMode(t *testing.T)
 	op := rebase.NewOperation(
 		ctx,
 		jj.NewSelectedRevisions(&jj.Commit{ChangeId: "abc123", CommitId: "def456"}),
+		&jj.Commit{ChangeId: "abc123", CommitId: "def456"},
 		rebase.SourceRevision,
 		intents.ModeTargetDestination,
 	)
@@ -681,7 +864,7 @@ func Test_HandleDispatchedAction_RevisionsScopedActionInSetParentsMode(t *testin
 	ctx := test.NewTestContext(commandRunner)
 	model := NewUI(ctx)
 
-	op := set_parents.NewModel(ctx, &jj.Commit{ChangeId: "abc123", CommitId: "def456"})
+	op := set_parents.NewModel(ctx, &jj.Commit{ChangeId: "abc123", CommitId: "def456"}, &jj.Commit{ChangeId: "abc123", CommitId: "def456"})
 	model.Update(common.RestoreOperationMsg{Operation: op})
 	assert.False(t, model.revisions.InNormalMode(), "model should be in set parents mode")
 
@@ -701,7 +884,88 @@ func Test_HandleIntent_EditEntersRevsetInNormalMode(t *testing.T) {
 	cmd, handled := model.HandleIntent(intents.Edit{})
 	assert.True(t, handled)
 	assert.NotNil(t, cmd)
-	assert.True(t, model.revsetModel.Editing)
+	assert.True(t, model.revsetModel.IsEditing())
+}
+
+func Test_HandleIntent_ChangeThemeUpdatesCurrentMode(t *testing.T) {
+	setupThemeTestConfig(t)
+
+	commandRunner := test.NewTestCommandRunner(t)
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	ctx.TerminalHasDarkBackground = true
+	model := NewUI(ctx)
+
+	cmd, handled := model.HandleIntent(intents.ChangeTheme{Name: "runtime_dark"})
+	require.True(t, handled)
+	require.NotNil(t, cmd)
+	_, ok := cmd().(common.ThemeChangedMsg)
+	require.True(t, ok)
+
+	assert.Equal(t, "runtime_dark", config.Current.UI.Theme.Dark)
+	assert.Equal(t, "", config.Current.UI.Theme.Light)
+}
+
+func Test_HandleIntent_ChangeThemeUpdatesLightModeWhenActive(t *testing.T) {
+	setupThemeTestConfig(t)
+
+	commandRunner := test.NewTestCommandRunner(t)
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	ctx.TerminalHasDarkBackground = false
+	model := NewUI(ctx)
+
+	cmd, handled := model.HandleIntent(intents.ChangeTheme{Name: "runtime_light"})
+	require.True(t, handled)
+	require.NotNil(t, cmd)
+	_, ok := cmd().(common.ThemeChangedMsg)
+	require.True(t, ok)
+
+	assert.Equal(t, "", config.Current.UI.Theme.Dark)
+	assert.Equal(t, "runtime_light", config.Current.UI.Theme.Light)
+}
+
+func Test_HandleIntent_ChangeThemeRollsBackOnLoadError(t *testing.T) {
+	setupThemeTestConfig(t)
+	config.Current.UI.Theme.Dark = "runtime_dark"
+	config.Current.UI.Theme.Light = "runtime_light"
+
+	commandRunner := test.NewTestCommandRunner(t)
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	ctx.TerminalHasDarkBackground = true
+	model := NewUI(ctx)
+
+	cmd, handled := model.HandleIntent(intents.ChangeTheme{Name: "missing_theme"})
+	require.True(t, handled)
+	require.NotNil(t, cmd)
+	msg := cmd()
+	flash, ok := msg.(intents.AddMessage)
+	require.True(t, ok)
+	assert.Error(t, flash.Err)
+
+	assert.Equal(t, "runtime_dark", config.Current.UI.Theme.Dark)
+	assert.Equal(t, "runtime_light", config.Current.UI.Theme.Light)
+}
+
+func setupThemeTestConfig(t *testing.T) {
+	t.Helper()
+	origTheme := config.Current.UI.Theme
+	t.Cleanup(func() { config.Current.UI.Theme = origTheme })
+	config.Current.UI.Theme = config.ThemeConfig{}
+
+	configDir := t.TempDir()
+	t.Setenv("JJUI_CONFIG_DIR", configDir)
+	themesDir := filepath.Join(configDir, "themes")
+	require.NoError(t, os.MkdirAll(themesDir, 0o755))
+	for _, name := range []string{"runtime_dark", "runtime_light", "runtime_both"} {
+		themePath := filepath.Join(themesDir, name+".toml")
+		require.NoError(t, os.WriteFile(themePath, []byte(`title = { fg = "blue" }
+`), 0o644))
+	}
 }
 
 func Test_Update_RevsetScopedConfiguredActionDispatchesWhileEditing(t *testing.T) {
@@ -728,7 +992,7 @@ func Test_Update_RevsetScopedConfiguredActionDispatchesWhileEditing(t *testing.T
 	model := NewUI(ctx)
 
 	model.Update(tea.KeyPressMsg{Text: "L", Code: 'L'})
-	assert.True(t, model.revsetModel.Editing)
+	assert.True(t, model.revsetModel.IsEditing())
 
 	cmd := model.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	assert.NotNil(t, cmd, "ctrl+t should dispatch revset-scoped custom action")
@@ -757,7 +1021,37 @@ func Test_Update_LuaActionDispatchesBuiltInAction(t *testing.T) {
 	assert.NotNil(t, cmd)
 
 	test.SimulateModel(model, cmd)
-	assert.True(t, model.revsetModel.Editing, "lua-dispatched revset.edit should enter revset editing")
+	assert.True(t, model.revsetModel.IsEditing(), "lua-dispatched revset.edit should enter revset editing")
+}
+
+func Test_Update_LuaRevsetSetWorksOutsideRevsetScope(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	ctx.CurrentRevset = "old"
+	model := NewUI(ctx)
+
+	cmd := model.Update(common.DispatchActionMsg{
+		Action: "revset.set",
+		Args:   map[string]any{"value": "new"},
+	})
+	require.NotNil(t, cmd)
+
+	batch, ok := cmd().(tea.BatchMsg)
+	require.True(t, ok)
+
+	applied := false
+	for _, batchCmd := range batch {
+		msg := batchCmd()
+		if revsetMsg, ok := msg.(common.UpdateRevSetMsg); ok {
+			applied = true
+			model.Update(revsetMsg)
+		}
+	}
+
+	require.True(t, applied, "revset.set should emit an UpdateRevSetMsg")
+	assert.Equal(t, "new", ctx.CurrentRevset)
 }
 
 func Test_Update_LuaBuiltinActionBypassesConfiguredOverride(t *testing.T) {
@@ -782,12 +1076,12 @@ func Test_Update_LuaBuiltinActionBypassesConfiguredOverride(t *testing.T) {
 	cmd := model.Update(common.RunLuaScriptMsg{Script: `jjui.revset.edit()`})
 	require.NotNil(t, cmd)
 	test.SimulateModel(model, cmd)
-	assert.False(t, model.revsetModel.Editing, "override should replace default action behavior")
+	assert.False(t, model.revsetModel.IsEditing(), "override should replace default action behavior")
 
 	cmd = model.Update(common.RunLuaScriptMsg{Script: `jjui.builtin.revset.edit()`})
 	require.NotNil(t, cmd)
 	test.SimulateModel(model, cmd)
-	assert.True(t, model.revsetModel.Editing, "builtin action should bypass override and run default behavior")
+	assert.True(t, model.revsetModel.IsEditing(), "builtin action should bypass override and run default behavior")
 }
 
 func Test_Update_OperationScopedConfiguredActionOverridesBuiltInIntent(t *testing.T) {
@@ -878,14 +1172,66 @@ func Test_Update_DiffEscClosesDiffAndRestoresDetails(t *testing.T) {
 	assert.Equal(t, "details", model.revisions.CurrentOperation().Name())
 }
 
+func Test_Update_OpenTargetPickerWhileDiffActiveCreatesRootOverlay(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+	model.diff = diff.NewWithContext(ctx, "diff content", jj.Diff("abc123", ""))
+
+	cmd := model.Update(common.OpenTargetPickerMsg{
+		Sources: []source.Source{source.FileSource{Files: []string{"a.go"}}},
+	})
+	require.NotNil(t, cmd)
+	test.SimulateModel(model, cmd)
+
+	require.NotNil(t, model.stacked)
+	_, ok := model.stacked.(*target_picker.Model)
+	require.True(t, ok)
+
+	model.Update(tea.WindowSizeMsg{Width: 40, Height: 8})
+	rendered := model.View()
+	assert.Contains(t, rendered, "a.go")
+}
+
+func Test_Update_DiffTargetPickerClosesOnSelectionAndCancel(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+	model.diff = diff.NewWithContext(ctx, "diff content", jj.Diff("abc123", ""))
+
+	cmd := model.Update(common.OpenTargetPickerMsg{
+		Sources: []source.Source{source.FileSource{Files: []string{"a.go"}}},
+	})
+	require.NotNil(t, cmd)
+	test.SimulateModel(model, cmd)
+	require.NotNil(t, model.stacked)
+
+	model.Update(target_picker.TargetSelectedMsg{Target: "a.go"})
+	assert.Nil(t, model.stacked)
+
+	cmd = model.Update(common.OpenTargetPickerMsg{
+		Sources: []source.Source{source.FileSource{Files: []string{"a.go"}}},
+	})
+	require.NotNil(t, cmd)
+	test.SimulateModel(model, cmd)
+	require.NotNil(t, model.stacked)
+
+	model.Update(target_picker.TargetPickerCancelMsg{})
+	assert.Nil(t, model.stacked)
+}
+
 func Test_Update_DispatchedPreviewShowUpdatesVisiblePreview(t *testing.T) {
 	commandRunner := test.NewTestCommandRunner(t)
 	defer commandRunner.Verify()
 
 	ctx := test.NewTestContext(commandRunner)
 	model := NewUI(ctx)
-	model.previewModel.SetVisible(true)
-	model.previewModel.SetContent("old")
+	previewModel := showPreview(t, model)
+	previewModel.SetContent("old")
 
 	cmd := model.Update(common.DispatchActionMsg{
 		Action:  "ui.preview.show",
@@ -893,7 +1239,7 @@ func Test_Update_DispatchedPreviewShowUpdatesVisiblePreview(t *testing.T) {
 		BuiltIn: true,
 	})
 	require.Nil(t, cmd)
-	assert.Equal(t, "new", test.Stripped(test.RenderImmediate(model.previewModel, 20, 3)))
+	assert.Equal(t, "new", test.Stripped(test.RenderImmediate(previewModel, 20, 3)))
 }
 
 func Test_Update_DispatchedPreviewShowOpensHiddenPreview(t *testing.T) {
@@ -902,8 +1248,6 @@ func Test_Update_DispatchedPreviewShowOpensHiddenPreview(t *testing.T) {
 
 	ctx := test.NewTestContext(commandRunner)
 	model := NewUI(ctx)
-	model.previewModel.SetContent("old")
-	model.previewModel.SetVisible(false)
 
 	cmd := model.Update(common.DispatchActionMsg{
 		Action:  "ui.preview.show",
@@ -911,8 +1255,8 @@ func Test_Update_DispatchedPreviewShowOpensHiddenPreview(t *testing.T) {
 		BuiltIn: true,
 	})
 	require.Nil(t, cmd)
-	assert.True(t, model.previewModel.Visible())
-	assert.Equal(t, "new", test.Stripped(test.RenderImmediate(model.previewModel, 20, 3)))
+	assert.NotEmpty(t, model.splitContainer.Scopes())
+	assert.Equal(t, "new", test.Stripped(test.RenderImmediate(activePreview(t, model), 20, 3)))
 }
 
 func Test_Update_LuaInputEscCancelsAndFinishesScript(t *testing.T) {
@@ -935,7 +1279,7 @@ func Test_Update_LuaInputEscCancelsAndFinishesScript(t *testing.T) {
 	cmd := model.Update(common.RunLuaScriptMsg{Script: `local name = input("name")`})
 	require.NotNil(t, cmd)
 	test.SimulateModel(model, cmd)
-	require.NotNil(t, model.scriptRunner, "script should wait for input")
+	require.NotEmpty(t, model.scriptRunners, "script should wait for input")
 	require.NotNil(t, model.stacked, "input view should be stacked")
 
 	cmd = model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -943,7 +1287,7 @@ func Test_Update_LuaInputEscCancelsAndFinishesScript(t *testing.T) {
 	test.SimulateModel(model, cmd)
 
 	assert.Nil(t, model.stacked, "input should close after esc")
-	assert.Nil(t, model.scriptRunner, "script should finish after input cancel")
+	assert.Empty(t, model.scriptRunners, "script should finish after input cancel")
 }
 
 func Test_Update_LuaChooseEscViaUiCancelFinishesScript(t *testing.T) {
@@ -966,7 +1310,7 @@ func Test_Update_LuaChooseEscViaUiCancelFinishesScript(t *testing.T) {
 	cmd := model.Update(common.RunLuaScriptMsg{Script: `local choice = choose({"a", "b"})`})
 	require.NotNil(t, cmd)
 	test.SimulateModel(model, cmd)
-	require.NotNil(t, model.scriptRunner, "script should wait for choose")
+	require.NotEmpty(t, model.scriptRunners, "script should wait for choose")
 	require.NotNil(t, model.stacked, "choose view should be stacked")
 
 	cmd = model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -974,7 +1318,7 @@ func Test_Update_LuaChooseEscViaUiCancelFinishesScript(t *testing.T) {
 	test.SimulateModel(model, cmd)
 
 	assert.Nil(t, model.stacked, "choose should close after esc")
-	assert.Nil(t, model.scriptRunner, "script should finish after choose cancel")
+	assert.Empty(t, model.scriptRunners, "script should finish after choose cancel")
 }
 
 func Test_Update_LuaActionRejectsInvalidBuiltInArgs(t *testing.T) {
@@ -991,6 +1335,49 @@ func Test_Update_LuaActionRejectsInvalidBuiltInArgs(t *testing.T) {
 
 	test.SimulateModel(model, cmd)
 	assert.True(t, model.flash.Any(), "invalid canonical action args should surface an error flash message")
+	assert.Empty(t, model.scriptRunners, "script should finish after invalid action args are reported")
+}
+
+func Test_Update_LuaDetailsCloseJumpParentOpenDetailsSequencesActions(t *testing.T) {
+	const statusOutput = "false false $\nM file.txt\n"
+	const logOutput = "○  _PREFIX:child_PREFIX:childcommit \x1b[1m\x1b[38;5;5mchild\x1b[0m \x1b[38;5;3mauthor\x1b[39m \x1b[38;5;6m2026-05-05\x1b[39m \x1b[1m\x1b[38;5;4mchildcommit\x1b[0m\n○  _PREFIX:parent_PREFIX:parentcommit \x1b[1m\x1b[38;5;5mparent\x1b[0m \x1b[38;5;3mauthor\x1b[39m \x1b[38;5;6m2026-05-05\x1b[39m \x1b[1m\x1b[38;5;4mparentcommit\x1b[0m\n"
+
+	origLogBatching := config.Current.Revisions.LogBatching
+	defer func() {
+		config.Current.Revisions.LogBatching = origLogBatching
+	}()
+	config.Current.Revisions.LogBatching = false
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	commandRunner.Expect(jj.Log(ctx.CurrentRevset, config.Current.Limit, ctx.JJConfig.Templates.Log)).SetOutput([]byte(logOutput))
+	commandRunner.Expect(jj.GetParent(jj.NewSelectedRevisions(&jj.Commit{ChangeId: "child", CommitId: "childcommit"}))).SetOutput([]byte("parentcommit"))
+	commandRunner.Expect(jj.Snapshot())
+	commandRunner.Expect(jj.Status("parent")).SetOutput([]byte(statusOutput))
+	defer commandRunner.Verify()
+
+	require.NoError(t, scripting.InitVM(ctx))
+	defer scripting.CloseVM(ctx)
+	model := NewUI(ctx)
+	test.SimulateModel(model, model.revisions.Update(common.RefreshMsg{SelectedRevision: "child"}))
+	require.NotNil(t, model.revisions.SelectedRevision())
+	require.Equal(t, "child", model.revisions.SelectedRevision().GetChangeId())
+
+	model.Update(common.RestoreOperationMsg{Operation: details.NewOperation(ctx, model.revisions.SelectedRevision())})
+	require.False(t, model.revisions.InNormalMode(), "details operation should be active")
+
+	cmd := model.Update(common.RunLuaScriptMsg{Script: `
+		revisions.details.close()
+		revisions.jump_to_parent()
+		revisions.open_details()
+	`})
+	require.NotNil(t, cmd)
+	test.SimulateModel(model, cmd)
+
+	require.NotNil(t, model.revisions.SelectedRevision())
+	assert.Equal(t, "parent", model.revisions.SelectedRevision().GetChangeId())
+	assert.Equal(t, "details", model.revisions.CurrentOperation().Name())
+	assert.Empty(t, model.scriptRunners)
 }
 
 func Test_Update_ExecHistoryUpDownNavigationInStatusInputScope(t *testing.T) {
@@ -1057,7 +1444,7 @@ func Test_UpdateStatus_RevsetEditingUsesDispatcherHelpWhenAvailable(t *testing.T
 	model := NewUI(ctx)
 
 	model.revsetModel.Update(revset.EditRevSetMsg{})
-	assert.True(t, model.revsetModel.Editing)
+	assert.True(t, model.revsetModel.IsEditing())
 
 	model.updateStatus()
 	entries := help.FlatEntries(model.status.Help())
@@ -1143,16 +1530,12 @@ func Test_Update_InlineDescribeDispatcherKeysWorkWhileEditing(t *testing.T) {
 	assert.NotNil(t, cmd, "alt+enter should trigger inline_describe_accept via dispatcher")
 }
 
-func Test_Update_DetailsCancelPrecedenceOverFlashDismissal(t *testing.T) {
-	origBindings := config.Current.Bindings
-	defer func() {
-		config.Current.Bindings = origBindings
-	}()
-	config.Current.Bindings = []config.BindingConfig{
-		{Action: "revisions.details.cancel", Scope: "revisions.details", Key: config.StringList{"h"}},
-	}
+func Test_Update_DetailsCloseClearsSelectedFiles(t *testing.T) {
+	const statusOutput = "false false $\nM file.txt\nA newfile.txt\n"
 
 	commandRunner := test.NewTestCommandRunner(t)
+	commandRunner.Expect(jj.Snapshot())
+	commandRunner.Expect(jj.Status("abc123")).SetOutput([]byte(statusOutput))
 	defer commandRunner.Verify()
 
 	ctx := test.NewTestContext(commandRunner)
@@ -1160,14 +1543,40 @@ func Test_Update_DetailsCancelPrecedenceOverFlashDismissal(t *testing.T) {
 
 	op := details.NewOperation(ctx, &jj.Commit{ChangeId: "abc123", CommitId: "def456"})
 	model.Update(common.RestoreOperationMsg{Operation: op})
+	test.SimulateModel(model, op.Init())
 	require.False(t, model.revisions.InNormalMode(), "details operation should be active")
 
-	model.Update(intents.AddMessage{Text: "flash", Sticky: true})
-	require.True(t, model.flash.Any(), "flash should be visible before cancel")
+	test.SimulateModel(model, func() tea.Msg { return intents.DetailsToggleSelect{} })
+	require.Len(t, ctx.CheckedItems, 1, "details selection should be tracked before close")
 
-	test.SimulateModel(model, test.Type("h"))
-	assert.True(t, model.revisions.InNormalMode(), "details cancel should close details operation")
-	assert.True(t, model.flash.Any(), "details cancel should not dismiss flash first")
+	test.SimulateModel(model, test.Press(tea.KeyEsc))
+	assert.True(t, model.revisions.InNormalMode(), "esc should close details")
+	assert.Empty(t, ctx.CheckedItems, "closing details should clear selected files from context")
+}
+
+func Test_Update_RestoreDetailsOperationResyncsSelectedFiles(t *testing.T) {
+	const statusOutput = "false false $\nM file.txt\nA newfile.txt\n"
+
+	commandRunner := test.NewTestCommandRunner(t)
+	commandRunner.Expect(jj.Snapshot())
+	commandRunner.Expect(jj.Status("abc123")).SetOutput([]byte(statusOutput))
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	op := details.NewOperation(ctx, &jj.Commit{ChangeId: "abc123", CommitId: "def456"})
+	model.Update(common.RestoreOperationMsg{Operation: op})
+	test.SimulateModel(model, op.Init())
+
+	test.SimulateModel(model, func() tea.Msg { return intents.DetailsToggleSelect{} })
+	require.Len(t, ctx.CheckedItems, 1, "details selection should be tracked before close")
+
+	model.Update(common.CloseViewMsg{})
+	assert.Empty(t, ctx.CheckedItems, "closing details should clear selected files from context")
+
+	model.Update(common.RestoreOperationMsg{Operation: op})
+	assert.Len(t, ctx.CheckedItems, 1, "restoring details should resync checked files from the operation state")
 }
 
 func Test_Update_DetailsEscClosesOperation(t *testing.T) {
@@ -1223,6 +1632,37 @@ func Test_Update_DetailsEscClosesOperation_WithDefaultBindings(t *testing.T) {
 	assert.True(t, model.revisions.InNormalMode(), "default details esc should close details operation")
 }
 
+func Test_Update_CommandErrorAfterClosingDetailsWithSelectedFiles_AllowsEscToDismissFlash(t *testing.T) {
+	const statusOutput = "false false $\nM file.txt\nA newfile.txt\n"
+
+	commandRunner := test.NewTestCommandRunner(t)
+	commandRunner.Expect(jj.Snapshot())
+	commandRunner.Expect(jj.Status("abc123")).SetOutput([]byte(statusOutput))
+	defer commandRunner.Verify()
+
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	op := details.NewOperation(ctx, &jj.Commit{ChangeId: "abc123", CommitId: "def456"})
+	model.Update(common.RestoreOperationMsg{Operation: op})
+	test.SimulateModel(model, op.Init())
+	require.False(t, model.revisions.InNormalMode(), "details operation should be active")
+
+	test.SimulateModel(model, func() tea.Msg { return intents.DetailsToggleSelect{} })
+	require.Len(t, ctx.CheckedItems, 1, "details selection should be tracked before close")
+
+	model.Update(common.CloseViewMsg{})
+	model.Update(common.CommandCompletedMsg{Err: errors.New("split failed")})
+
+	assert.True(t, model.revisions.InNormalMode(), "closing details should return to revisions")
+	assert.True(t, model.flash.Any(), "command failure should surface as a flash message")
+	assert.Empty(t, ctx.CheckedItems, "selected files should be cleared when leaving details")
+
+	cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	assert.Nil(t, cmd, "esc should dismiss the flash instead of being consumed by stale checked items")
+	assert.False(t, model.flash.Any(), "esc should dismiss the split error flash")
+}
+
 func Test_Update_SetBookmarkTypingDoesNotTogglePreview(t *testing.T) {
 	origBindings := config.Current.Bindings
 	defer func() {
@@ -1238,14 +1678,169 @@ func Test_Update_SetBookmarkTypingDoesNotTogglePreview(t *testing.T) {
 
 	ctx := test.NewTestContext(commandRunner)
 	model := NewUI(ctx)
-	model.previewModel.SetVisible(true)
+	showPreview(t, model)
 
-	op := bookmark.NewSetBookmarkOperation(ctx, "abc123")
+	op := bookmark.NewSetBookmarkOperation(ctx, "abc123", "")
 	test.SimulateModel(op, op.Init())
 	model.Update(common.RestoreOperationMsg{Operation: op})
 	require.False(t, model.revisions.InNormalMode(), "set bookmark operation should be active")
 	require.True(t, model.revisions.IsEditing(), "set bookmark should be editing")
 
 	test.SimulateModel(model, test.Type("p"))
-	assert.True(t, model.previewModel.Visible(), "typing in set_bookmark should not toggle preview")
+	assert.NotEmpty(t, model.splitContainer.Scopes(), "typing in set_bookmark should not toggle preview")
+}
+
+// withShortColorSchemePoll temporarily shortens the polling interval so
+// tests don't have to wait the full default duration for tea.Tick to fire.
+func withShortColorSchemePoll(t *testing.T) {
+	t.Helper()
+	orig := colorSchemePollInterval
+	colorSchemePollInterval = time.Millisecond
+	t.Cleanup(func() { colorSchemePollInterval = orig })
+}
+
+// drainCmds expands a Cmd tree, invoking each leaf Cmd and feeding the
+// resulting tea.BatchMsg back through the queue. visit is called once for
+// every non-batch leaf Cmd (with the Cmd itself and the message it produced,
+// which may be nil). Stop draining by returning false.
+func drainCmds(root tea.Cmd, visit func(c tea.Cmd, msg tea.Msg) bool) {
+	queue := []tea.Cmd{root}
+	for len(queue) > 0 {
+		var c tea.Cmd
+		c, queue = queue[0], queue[1:]
+		if c == nil {
+			continue
+		}
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		if !visit(c, msg) {
+			return
+		}
+	}
+}
+
+func Test_Init_EnablesMode2031AndStartsPolling(t *testing.T) {
+	withShortColorSchemePoll(t)
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	w := New(ctx)
+
+	cmd := w.Init()
+	require.NotNil(t, cmd)
+
+	var foundEnable2031, foundProbe2031, foundPollTick bool
+
+	drainCmds(cmd, func(c tea.Cmd, msg tea.Msg) bool {
+		switch v := msg.(type) {
+		case tea.RawMsg:
+			switch v.Msg {
+			case ansi.SetModeLightDark:
+				foundEnable2031 = true
+			case ansi.RequestModeLightDark:
+				foundProbe2031 = true
+			}
+		case colorSchemePollTickMsg:
+			foundPollTick = true
+		}
+		return true
+	})
+
+	assert.True(t, foundEnable2031)
+	assert.True(t, foundProbe2031)
+	assert.True(t, foundPollTick)
+}
+
+func Test_PollTick_RequestsBackgroundColorAndRearms(t *testing.T) {
+	withShortColorSchemePoll(t)
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	cmd := model.Update(colorSchemePollTickMsg{})
+	require.NotNil(t, cmd)
+
+	wantRequestPC := reflect.ValueOf(tea.RequestBackgroundColor).Pointer()
+
+	var foundRequest, foundRearm bool
+	drainCmds(cmd, func(c tea.Cmd, msg tea.Msg) bool {
+		if reflect.ValueOf(c).Pointer() == wantRequestPC {
+			foundRequest = true
+			return true
+		}
+		if _, ok := msg.(colorSchemePollTickMsg); ok {
+			foundRearm = true
+		}
+		return true
+	})
+	assert.True(t, foundRequest)
+	assert.True(t, foundRearm)
+}
+
+func Test_PollTick_StopsWhenMode2031Supported(t *testing.T) {
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	model.Update(tea.ModeReportMsg{Mode: ansi.ModeLightDark, Value: ansi.ModeSet})
+	assert.True(t, model.mode2031Supported)
+
+	cmd := model.Update(colorSchemePollTickMsg{})
+	assert.Nil(t, cmd)
+}
+
+func Test_PollTick_ContinuesWhenMode2031NotRecognized(t *testing.T) {
+	withShortColorSchemePoll(t)
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	model.Update(tea.ModeReportMsg{Mode: ansi.ModeLightDark, Value: ansi.ModeNotRecognized})
+	assert.False(t, model.mode2031Supported)
+
+	cmd := model.Update(colorSchemePollTickMsg{})
+	assert.NotNil(t, cmd, "polling should continue when mode 2031 is not recognized")
+}
+
+func Test_ResumeMsg_ReEnablesMode2031AndQueriesBackground(t *testing.T) {
+	withShortColorSchemePoll(t)
+
+	commandRunner := test.NewTestCommandRunner(t)
+	ctx := test.NewTestContext(commandRunner)
+	model := NewUI(ctx)
+
+	cmd := model.Update(tea.ResumeMsg{})
+	require.NotNil(t, cmd)
+
+	wantRequestPC := reflect.ValueOf(tea.RequestBackgroundColor).Pointer()
+
+	var foundEnable2031, foundProbe2031, foundBgRequest, foundPollTick bool
+	drainCmds(cmd, func(c tea.Cmd, msg tea.Msg) bool {
+		if reflect.ValueOf(c).Pointer() == wantRequestPC {
+			foundBgRequest = true
+			return true
+		}
+		switch v := msg.(type) {
+		case tea.RawMsg:
+			switch v.Msg {
+			case ansi.SetModeLightDark:
+				foundEnable2031 = true
+			case ansi.RequestModeLightDark:
+				foundProbe2031 = true
+			}
+		case colorSchemePollTickMsg:
+			foundPollTick = true
+		}
+		return true
+	})
+
+	assert.True(t, foundEnable2031, "resume should re-enable mode 2031")
+	assert.True(t, foundBgRequest, "resume should re-query background color")
+	assert.False(t, foundProbe2031, "resume should not re-probe mode 2031 support; the initial probe result still applies")
+	assert.False(t, foundPollTick, "resume should not restart polling; the existing poll loop survives suspension")
 }

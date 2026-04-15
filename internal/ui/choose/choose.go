@@ -9,7 +9,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -43,21 +42,12 @@ type Model struct {
 	filteredOptions     []string
 	selected            int
 	title               string
-	styles              styles
 	listRenderer        *render.ListRenderer
 	ensureCursorVisible bool
 	filterable          bool
 	filtering           bool
 	ordered             bool
 	input               textinput.Model
-}
-
-type styles struct {
-	border   lipgloss.Style
-	text     lipgloss.Style
-	title    lipgloss.Style
-	selected lipgloss.Style
-	input    lipgloss.Style
 }
 
 const maxVisibleItems = 20
@@ -76,22 +66,16 @@ func NewWithOptions(options []string, title string, filterable bool, ordered boo
 	ti.Placeholder = "filter..."
 	ti.CharLimit = 100
 	ti.SetWidth(20)
+	ti.SetVirtualCursor(false)
 
 	m := &Model{
 		options:         options,
 		filteredOptions: options,
 		title:           title,
-		styles: styles{
-			border:   common.DefaultPalette.GetBorder("choose border", lipgloss.RoundedBorder()),
-			text:     common.DefaultPalette.Get("choose text"),
-			title:    common.DefaultPalette.Get("choose title"),
-			selected: common.DefaultPalette.Get("choose selected"),
-			input:    common.DefaultPalette.Get("choose input"),
-		},
-		listRenderer: render.NewListRenderer(itemScrollMsg{}),
-		filterable:   filterable,
-		ordered:      ordered,
-		input:        ti,
+		listRenderer:    render.NewListRenderer(itemScrollMsg{}),
+		filterable:      filterable,
+		ordered:         ordered,
+		input:           ti,
 	}
 	m.listRenderer.Z = render.ZMenuContent
 	return m
@@ -105,25 +89,25 @@ func (m *Model) IsEditing() bool {
 	return m.filtering
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
+func (m *Model) Scopes() []common.Scope {
 	if m.IsEditing() {
-		return []dispatch.Scope{
+		return []common.Scope{
 			{
 				Name:    actions.ScopeChoose + ".filter",
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 			{
 				Name:    actions.ScopeChoose,
-				Leak:    dispatch.LeakNone,
+				Leak:    common.LeakNone,
 				Handler: m,
 			},
 		}
 	}
-	return []dispatch.Scope{
+	return []common.Scope{
 		{
 			Name:    actions.ScopeChoose,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: m,
 		},
 	}
@@ -253,6 +237,22 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 		m.listRenderer = render.NewListRenderer(itemScrollMsg{})
 	}
 
+	borderStyle := common.DefaultPalette.GetBorder("choose border", lipgloss.RoundedBorder())
+	surfaceStyle := common.DefaultPalette.Get("choose")
+	textStyle := common.DefaultPalette.Get("choose text")
+	titleStyle := common.DefaultPalette.Get("choose title")
+	selectedStyle := common.DefaultPalette.Get("choose selected")
+	inputStyle := common.DefaultPalette.Get("choose input")
+
+	inputStyles := m.input.Styles()
+	inputStyles.Focused.Text = inputStyle
+	inputStyles.Focused.Prompt = inputStyle
+	inputStyles.Focused.Placeholder = inputStyle
+	inputStyles.Blurred.Text = inputStyle
+	inputStyles.Blurred.Prompt = inputStyle
+	inputStyles.Blurred.Placeholder = inputStyle
+	m.input.SetStyles(inputStyles)
+
 	maxContentWidth := max(box.R.Dx()-2, 0)
 	maxContentHeight := max(box.R.Dy()-2, 0)
 	if maxContentWidth <= 0 || maxContentHeight <= 0 {
@@ -309,21 +309,25 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 	if contentBox.R.Dx() <= 0 || contentBox.R.Dy() <= 0 {
 		return
 	}
+	dl.AddFill(contentBox.R, ' ', surfaceStyle, render.ZMenuContent)
 
 	borderBase := lipgloss.NewStyle().Width(contentBox.R.Dx()).Height(contentBox.R.Dy()).Render("")
-	dl.AddDraw(frame.R, m.styles.border.Render(borderBase), render.ZMenuBorder)
+	dl.AddDraw(frame.R, borderStyle.Render(borderBase), render.ZMenuBorder)
 
 	listBox := contentBox
 	if titleHeight > 0 {
 		var titleBox layout.Box
 		titleBox, listBox = contentBox.CutTop(1)
-		dl.AddDraw(titleBox.R, m.styles.title.Render(m.title), render.ZMenuContent)
+		dl.AddDraw(titleBox.R, titleStyle.Render(m.title), render.ZMenuContent)
+		dl.AddPaint(titleBox.R, titleStyle, render.ZMenuContent)
 	}
 
 	if inputHeight > 0 {
 		var inputBox layout.Box
 		inputBox, listBox = listBox.CutTop(1)
-		dl.AddDraw(inputBox.R, m.styles.input.Render(m.input.View()), render.ZMenuContent)
+		dl.AddDraw(inputBox.R, inputStyle.Render(m.input.View()), render.ZMenuContent)
+		dl.AddPaint(inputBox.R, inputStyle, render.ZMenuContent)
+		dl.SetCursorInRect(m.input.Cursor(), inputBox.R, 0, 0)
 	}
 
 	if listBox.R.Dx() <= 0 || listBox.R.Dy() <= 0 {
@@ -343,9 +347,9 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 			if index < 0 || index >= itemCount || rect.Dx() <= 0 || rect.Dy() <= 0 {
 				return
 			}
-			style := m.styles.text
+			style := textStyle
 			if index == m.selected {
-				style = m.styles.selected
+				style = selectedStyle
 			}
 			label := m.filteredOptions[index]
 			if m.ordered && index < 9 {
@@ -353,6 +357,7 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 			}
 			line := style.Padding(0, 1).Width(rect.Dx()).Render(label)
 			dl.AddDraw(rect, line, render.ZMenuContent)
+			dl.AddPaint(rect, style, render.ZMenuContent)
 		},
 		func(index int, _ tea.Mouse) tea.Msg { return itemClickMsg{Index: index} },
 	)

@@ -6,9 +6,23 @@ import (
 
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestReplayTerminalOutput(t *testing.T) {
+	output := "git: bad configuration option        \rgit: \n" +
+		"git: terminating        \rgit: \n" +
+		"remote: failed        \rremote: \n"
+
+	assert.Equal(t,
+		"git: bad configuration option\n"+
+			"git: terminating\n"+
+			"remote: failed\n",
+		ansi.Strip(ReplayTerminalOutput(output)),
+	)
+}
 
 func TestDisplayContext_AddDraw(t *testing.T) {
 	dl := NewDisplayContext()
@@ -163,6 +177,53 @@ func TestIterateCells_BoundsChecking(t *testing.T) {
 	if cell == nil {
 		t.Error("Expected cell at (4,0) to exist")
 	}
+}
+
+func TestDisplayContext_ForcedPaintWithNoBackgroundDoesNotClearExistingBackground(t *testing.T) {
+	plain := NewDisplayContext()
+	rect := layout.Rect(0, 0, 5, 1)
+	text := lipgloss.NewStyle().Background(lipgloss.Color("1")).Render("hello")
+	plain.AddDraw(rect, text, 0)
+
+	plainBuf := uv.NewScreenBuffer(5, 1)
+	plain.Render(plainBuf)
+	wantBg := plainBuf.CellAt(0, 0).Style.Bg
+
+	painted := NewDisplayContext()
+	painted.AddDraw(rect, text, 0)
+	painted.AddPaint(rect, lipgloss.NewStyle().Foreground(lipgloss.Color("2")), 1)
+
+	paintedBuf := uv.NewScreenBuffer(5, 1)
+	painted.Render(paintedBuf)
+
+	assert.Equal(t, wantBg, paintedBuf.CellAt(0, 0).Style.Bg, "forced paint without a background should leave existing backgrounds unchanged")
+}
+
+func TestDisplayContext_PreserveBackgroundDrawOptionKeepsFilledBackground(t *testing.T) {
+	dl := NewDisplayContext()
+	rect := layout.Rect(0, 0, 5, 1)
+	fillStyle := lipgloss.NewStyle().Background(lipgloss.Color("1"))
+	dl.AddFill(rect, ' ', fillStyle, 0)
+	dl.AddDraw(rect, "hello", 1, PreserveBackground())
+
+	buf := uv.NewScreenBuffer(5, 1)
+	dl.Render(buf)
+
+	assert.Equal(t, toAnsiColor(fillStyle.GetBackground()), buf.CellAt(0, 0).Style.Bg)
+}
+
+func TestDisplayContext_PreserveBackgroundDrawOptionKeepsExplicitSourceBackground(t *testing.T) {
+	dl := NewDisplayContext()
+	rect := layout.Rect(0, 0, 5, 1)
+	fillStyle := lipgloss.NewStyle().Background(lipgloss.Color("1"))
+	text := lipgloss.NewStyle().Background(lipgloss.Color("4")).Render("hello")
+	dl.AddFill(rect, ' ', fillStyle, 0)
+	dl.AddDraw(rect, text, 1, PreserveBackground())
+
+	buf := uv.NewScreenBuffer(5, 1)
+	dl.Render(buf)
+
+	assert.Equal(t, toAnsiColor(lipgloss.Color("4")), buf.CellAt(0, 0).Style.Bg)
 }
 
 func TestDisplayContext_HighlightPreservesWideCharacters(t *testing.T) {

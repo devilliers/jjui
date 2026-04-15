@@ -1,6 +1,7 @@
 package help
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 
@@ -37,7 +38,7 @@ func BuildFromBindings(
 	bindings []config.BindingConfig,
 ) []Entry {
 	entries := make([]Entry, 0)
-	seenActions := map[keybindings.Action]struct{}{}
+	seenActions := map[string]struct{}{}
 
 	for i := len(bindings) - 1; i >= 0; i-- {
 		b := bindings[i]
@@ -48,7 +49,8 @@ func BuildFromBindings(
 		if action == "" {
 			continue
 		}
-		if _, seen := seenActions[action]; seen {
+		identity := bindingActionIdentity(action, b.Args)
+		if _, seen := seenActions[identity]; seen {
 			continue
 		}
 
@@ -61,7 +63,7 @@ func BuildFromBindings(
 			Label: label,
 			Desc:  bindingDesc(b),
 		})
-		seenActions[action] = struct{}{}
+		seenActions[identity] = struct{}{}
 	}
 
 	// Reverse to restore original order
@@ -70,6 +72,17 @@ func BuildFromBindings(
 	}
 
 	return entries
+}
+
+func bindingActionIdentity(action keybindings.Action, args map[string]any) string {
+	if len(args) == 0 {
+		return string(action)
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return string(action)
+	}
+	return string(action) + "\x00" + string(data)
 }
 
 // BuildGroupedFromBindings returns help entries grouped by scope.
@@ -82,7 +95,7 @@ func BuildGroupedFromBindings(
 		entries := BuildFromBindings(scope, bindings)
 		if len(entries) > 0 {
 			groups = append(groups, ScopeGroup{
-				Name:    scopeDisplayName(string(scope)),
+				Name:    ScopeDisplayName(string(scope)),
 				Entries: entries,
 			})
 		}

@@ -10,7 +10,6 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -19,7 +18,7 @@ import (
 
 var _ operations.Operation = (*SetBookmarkOperation)(nil)
 var _ common.Editable = (*SetBookmarkOperation)(nil)
-var _ dispatch.ScopeProvider = (*SetBookmarkOperation)(nil)
+var _ common.ScopeProvider = (*SetBookmarkOperation)(nil)
 
 type SetBookmarkOperation struct {
 	context         *context.MainContext
@@ -33,11 +32,11 @@ func (s *SetBookmarkOperation) IsEditing() bool {
 	return true
 }
 
-func (s *SetBookmarkOperation) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (s *SetBookmarkOperation) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeSetBookmark,
-			Leak:    dispatch.LeakNone,
+			Leak:    common.LeakNone,
 			Handler: s,
 		},
 	}
@@ -90,6 +89,7 @@ func (s *SetBookmarkOperation) ViewRect(dl *render.DisplayContext, box layout.Bo
 	w, h := lipgloss.Size(content)
 	rect := layout.Rect(box.R.Min.X, box.R.Min.Y, w, h)
 	dl.AddDraw(rect, content, 0)
+	dl.SetCursorInRect(s.name.Cursor(), rect, 0, 0)
 }
 
 func (s *SetBookmarkOperation) IsFocused() bool {
@@ -103,28 +103,26 @@ func (s *SetBookmarkOperation) Render(commit *jj.Commit, pos operations.RenderPo
 	return s.viewContent() + s.name.Styles().Focused.Text.Render(" ")
 }
 
+func (s *SetBookmarkOperation) InlineCursor(commit *jj.Commit, pos operations.RenderPosition) *tea.Cursor {
+	if pos != operations.RenderBeforeCommitId || commit.GetChangeId() != s.revision {
+		return nil
+	}
+	return s.name.Cursor()
+}
+
 func (s *SetBookmarkOperation) Name() string {
 	return "set bookmark"
 }
 
-func NewSetBookmarkOperation(context *context.MainContext, changeId string) *SetBookmarkOperation {
-	dimmedStyle := common.DefaultPalette.Get("revisions dimmed").Inline(true)
-	textStyle := common.DefaultPalette.Get("revisions text").Inline(true)
+func NewSetBookmarkOperation(context *context.MainContext, changeId string, initialValue string) *SetBookmarkOperation {
 	t := textinput.New()
 	t.ShowSuggestions = true
 	t.CharLimit = 120
 	t.Prompt = ""
-	s := textinput.DefaultDarkStyles()
-	s.Focused.Text = textStyle
-	s.Focused.Prompt = textStyle
-	s.Focused.Suggestion = dimmedStyle
-	s.Focused.Placeholder = dimmedStyle
-	s.Blurred.Text = textStyle
-	s.Blurred.Prompt = textStyle
-	s.Blurred.Suggestion = dimmedStyle
-	s.Blurred.Placeholder = dimmedStyle
-	t.SetStyles(s)
-	t.SetValue("")
+	t.SetVirtualCursor(false)
+
+	t.SetValue(initialValue)
+	t.CursorEnd()
 	t.Focus()
 
 	op := &SetBookmarkOperation{
@@ -138,6 +136,19 @@ func NewSetBookmarkOperation(context *context.MainContext, changeId string) *Set
 }
 
 func (s *SetBookmarkOperation) viewContent() string {
+	dimmedStyle := common.DefaultPalette.Get("revisions dimmed").Inline(true)
+	textStyle := common.DefaultPalette.Get("revisions text").Inline(true)
+	styles := s.name.Styles()
+	styles.Focused.Text = textStyle
+	styles.Focused.Prompt = textStyle
+	styles.Focused.Suggestion = dimmedStyle
+	styles.Focused.Placeholder = dimmedStyle
+	styles.Blurred.Text = textStyle
+	styles.Blurred.Prompt = textStyle
+	styles.Blurred.Suggestion = dimmedStyle
+	styles.Blurred.Placeholder = dimmedStyle
+	s.name.SetStyles(styles)
+
 	return s.name.View()
 }
 

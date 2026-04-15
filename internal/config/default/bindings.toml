@@ -23,8 +23,8 @@ bindings = [
     { key = "enter", action = "revset.apply", scope = "revset", desc = "apply" },
     { key = "tab", action = "revset.autocomplete", scope = "revset", desc = "autocomplete" },
     { key = "shift+tab", action = "revset.autocomplete_back", scope = "revset", desc = "autocomplete back" },
-    { key = "up", action = "revset.move_up", scope = "revset", desc = "up" },
-    { key = "down", action = "revset.move_down", scope = "revset", desc = "down" },
+    { key = ["up", "ctrl+p"], action = "revset.move_up", scope = "revset", desc = "up" },
+    { key = ["down", "ctrl+n"], action = "revset.move_down", scope = "revset", desc = "down" },
 
     # preview
     { key = "ctrl+h", action = "ui.preview_expand", scope = "ui.preview", desc = "expand preview" },
@@ -35,7 +35,6 @@ bindings = [
     { key = "ctrl+d", action = "ui.preview_half_page_down", scope = "ui.preview", desc = "half page down" },
 
     # revisions
-    { key = "esc", action = "revisions.cancel", scope = "revisions", desc = "clear selection" },
     { key = ["up", "k"], action = "revisions.move_up", scope = "revisions", desc = "up" },
     { key = ["down", "j"], action = "revisions.move_down", scope = "revisions", desc = "down" },
     { key = "ctrl+r", action = "revisions.refresh", scope = "revisions", desc = "refresh" },
@@ -48,13 +47,16 @@ bindings = [
     { key = "b", action = "ui.open_bookmarks", scope = "revisions", desc = "bookmarks" },
     { key = "g", action = "ui.open_git", scope = "revisions", desc = "git" },
     { key = "o", action = "ui.open_oplog", scope = "revisions", desc = "oplog" },
+    { key = "w", action = "ui.open_workspace", scope = "revisions", desc = "workspace" },
     { key = "shift+s", action = "revisions.open_squash", scope = "revisions", desc = "squash" },
     { key = "shift+m", action = "revisions.open_set_parents", scope = "revisions", desc = "set parents" },
     { key = "shift+r", action = "revisions.open_revert", scope = "revisions", desc = "revert" },
     { key = "y", action = "revisions.open_duplicate", scope = "revisions", desc = "duplicate" },
     { key = "d", action = "revisions.diff", scope = "revisions", desc = "diff" },
+    { key = "alt+d", action = "revisions.open_diff_range", scope = "revisions", desc = "diff range" },
     { key = "a", action = "revisions.open_abandon", scope = "revisions", desc = "abandon" },
     { key = "n", action = "revisions.new", scope = "revisions", desc = "new" },
+    { key = "alt+n", action = "revisions.open_new_between", scope = "revisions", desc = "new between" },
     { key = "s", action = "revisions.split", scope = "revisions", desc = "split" },
     { key = "alt+s", action = "revisions.split_parallel", scope = "revisions", desc = "split parallel" },
     { key = "shift+b", action = "revisions.open_set_bookmark", scope = "revisions", desc = "set bookmark" },
@@ -63,7 +65,7 @@ bindings = [
     { key = "alt+e", action = "revisions.force_edit", scope = "revisions", desc = "force edit" },
     { key = "c", action = "revisions.commit", scope = "revisions", desc = "commit" },
     { key = "shift+e", action = "revisions.diff_edit", scope = "revisions", desc = "diff edit" },
-    { key = "shift+a", action = "revisions.absorb", scope = "revisions", desc = "absorb" },
+    { key = "shift+a", action = "revisions.open_absorb", scope = "revisions", desc = "absorb" },
     { key = "u", action = "ui.open_undo", scope = "revisions", desc = "undo" },
     { key = "shift+u", action = "ui.open_redo", scope = "revisions", desc = "redo" },
     { key = "space", action = "revisions.toggle_select", scope = "revisions", desc = "select" },
@@ -79,6 +81,7 @@ bindings = [
     { key = "$", action = "ui.exec_shell", scope = "revisions", desc = "exec shell" },
     { key = "shift+w", action = "ui.open_command_history", scope = "revisions", desc = "command history" },
     { key = "shift+p", action = "ui.preview_toggle_bottom", scope = "revisions", desc = "move preview to bottom" },
+    { key = "esc", action = "revisions.cancel", scope = "revisions", desc = "clear selection" },
 
     # revisions.quick_search
     { key = "'", action = "revisions.quick_search.next", scope = "revisions.quick_search", desc = "next" },
@@ -98,8 +101,8 @@ bindings = [
     { key = "i", action = "revisions.rebase.set_target", scope = "revisions.rebase", desc = "target: insert", args = { target = "insert" } },
     { key = "t", action = "revisions.rebase.target_picker", scope = "revisions.rebase", desc = "set target" },
     { key = "e", action = "revisions.rebase.skip_emptied", scope = "revisions.rebase", desc = "skip emptied" },
-    { key = "f", action = "revisions.rebase.ace_jump", scope = "revisions.rebase", desc = "ace jump" },
     { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.rebase", desc = "jump to working copy" },
+    { key = "f", action = "revisions.rebase.ace_jump", scope = "revisions.rebase", desc = "ace jump" },
     { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.rebase", desc = "up" },
     { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.rebase", desc = "down" },
     { key = "pgup", action = "revisions.page_up", scope = "revisions.rebase", desc = "pgup" },
@@ -113,12 +116,12 @@ bindings = [
     { key = "e", action = "revisions.squash.keep_emptied", scope = "revisions.squash", desc = "keep emptied" },
     { key = "d", action = "revisions.squash.use_destination_msg", scope = "revisions.squash", desc = "use destination message" },
     { key = "i", action = "revisions.squash.interactive", scope = "revisions.squash", desc = "interactive" },
+    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.squash", desc = "jump to working copy" },
     { key = "f", action = "revisions.squash.ace_jump", scope = "revisions.squash", desc = "ace jump" },
     { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.squash", desc = "up" },
     { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.squash", desc = "down" },
     { key = "pgup", action = "revisions.page_up", scope = "revisions.squash", desc = "pgup" },
     { key = "pgdown", action = "revisions.page_down", scope = "revisions.squash", desc = "pgdown" },
-    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.squash", desc = "jump to working copy" },
 
     # revisions.revert
     { key = "enter", action = "revisions.revert.apply", scope = "revisions.revert", desc = "apply" },
@@ -129,6 +132,8 @@ bindings = [
     { key = "i", action = "revisions.revert.set_target", scope = "revisions.revert", desc = "target: insert", args = { target = "insert" } },
     { key = "t", action = "revisions.revert.target_picker", scope = "revisions.revert", desc = "set target" },
     { key = "alt+enter", action = "revisions.revert.apply", scope = "revisions.revert", desc = "force apply", args = { force = true } },
+    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.revert", desc = "jump to working copy" },
+    { key = "f", action = "revisions.rebase.ace_jump", scope = "revisions.revert", desc = "ace jump" },
     { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.revert", desc = "up" },
     { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.revert", desc = "down" },
     { key = "pgup", action = "revisions.page_up", scope = "revisions.revert", desc = "pgup" },
@@ -142,13 +147,13 @@ bindings = [
     { key = "o", action = "revisions.duplicate.set_target", scope = "revisions.duplicate", desc = "target: onto", args = { target = "onto" } },
     { key = "i", action = "revisions.duplicate.set_target", scope = "revisions.duplicate", desc = "target: insert", args = { target = "insert" } },
     { key = "t", action = "revisions.duplicate.target_picker", scope = "revisions.duplicate", desc = "set target" },
+    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.duplicate", desc = "jump to working copy" },
     { key = "f", action = "revisions.duplicate.ace_jump", scope = "revisions.duplicate", desc = "ace jump" },
     { key = "alt+enter", action = "revisions.duplicate.apply", scope = "revisions.duplicate", desc = "force apply", args = { force = true } },
     { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.duplicate", desc = "up" },
     { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.duplicate", desc = "down" },
     { key = "pgup", action = "revisions.page_up", scope = "revisions.duplicate", desc = "pgup" },
     { key = "pgdown", action = "revisions.page_down", scope = "revisions.duplicate", desc = "pgdown" },
-    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.duplicate", desc = "jump to working copy" },
 
     # revisions.details
     { key = ["up", "k"], action = "revisions.details.move_up", scope = "revisions.details", desc = "up" },
@@ -166,6 +171,7 @@ bindings = [
     { key = "shift+a", action = "revisions.details.absorb", scope = "revisions.details", desc = "absorb" },
     { key = "*", action = "revisions.details.revisions_changing_file", scope = "revisions.details", desc = "revisions changing file" },
     { key = "p", action = "ui.preview_toggle", scope = "revisions.details", desc = "preview" },
+    { key = "shift+p", action = "ui.preview_toggle_bottom", scope = "revisions.details", desc = "move preview to bottom" },
     { key = ["left", "h"], action = "revisions.details.confirmation.prev", scope = "revisions.details.confirmation", desc = "prev" },
     { key = ["right", "l"], action = "revisions.details.confirmation.next", scope = "revisions.details.confirmation", desc = "next" },
     { key = "enter", action = "revisions.details.confirmation.apply", scope = "revisions.details.confirmation", desc = "apply" },
@@ -197,16 +203,28 @@ bindings = [
     { key = "pgdown", action = "revisions.page_down", scope = "revisions.abandon", desc = "pgdown" },
     { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.abandon", desc = "jump to working copy" },
 
+    # revisions.absorb
+    { key = "space", action = "revisions.absorb.toggle_select", scope = "revisions.absorb", desc = "select" },
+    { key = "enter", action = "revisions.absorb.apply", scope = "revisions.absorb", desc = "apply" },
+    { key = "s", action = "revisions.absorb.select_descendants", scope = "revisions.absorb", desc = "select descendants" },
+    { key = "f", action = "revisions.absorb.ace_jump", scope = "revisions.absorb", desc = "ace jump" },
+    { key = "esc", action = "revisions.absorb.cancel", scope = "revisions.absorb", desc = "cancel" },
+    { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.absorb", desc = "up" },
+    { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.absorb", desc = "down" },
+    { key = "pgup", action = "revisions.page_up", scope = "revisions.absorb", desc = "pgup" },
+    { key = "pgdown", action = "revisions.page_down", scope = "revisions.absorb", desc = "pgdown" },
+    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.absorb", desc = "jump to working copy" },
+
     # revisions.set_parents
     { key = "space", action = "revisions.set_parents.toggle_select", scope = "revisions.set_parents", desc = "select" },
     { key = "enter", action = "revisions.set_parents.apply", scope = "revisions.set_parents", desc = "apply" },
+    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.set_parents", desc = "jump to working copy" },
     { key = "f", action = "revisions.set_parents.ace_jump", scope = "revisions.set_parents", desc = "ace jump" },
     { key = "esc", action = "revisions.set_parents.cancel", scope = "revisions.set_parents", desc = "cancel" },
     { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.set_parents", desc = "up" },
     { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.set_parents", desc = "down" },
     { key = "pgup", action = "revisions.page_up", scope = "revisions.set_parents", desc = "pgup" },
     { key = "pgdown", action = "revisions.page_down", scope = "revisions.set_parents", desc = "pgdown" },
-    { key = "@", action = "revisions.jump_to_working_copy", scope = "revisions.set_parents", desc = "jump to working copy" },
 
     # revisions.inline_describe
     { key = "esc", action = "revisions.inline_describe.cancel", scope = "revisions.inline_describe", desc = "cancel" },
@@ -221,12 +239,32 @@ bindings = [
     { key = "tab", action = "revisions.set_bookmark.autocomplete", scope = "revisions.set_bookmark", desc = "autocomplete" },
     { key = "shift+tab", action = "revisions.set_bookmark.autocomplete_back", scope = "revisions.set_bookmark", desc = "autocomplete back" },
 
+    # revisions.diff_range
+    { key = "enter", action = "revisions.diff_range.apply", scope = "revisions.diff_range", desc = "apply" },
+    { key = "x", action = "revisions.diff_range.swap", scope = "revisions.diff_range", desc = "swap" },
+    { key = "t", action = "revisions.diff_range.target_picker", scope = "revisions.diff_range", args = { target = "to" }, desc = "set to arg" },
+    { key = "f", action = "revisions.diff_range.target_picker", scope = "revisions.diff_range", args = { target = "from" }, desc = "set from arg" },
+    { key = "esc", action = "revisions.diff_range.cancel", scope = "revisions.diff_range", desc = "cancel" },
+    { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.diff_range", desc = "up" },
+    { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.diff_range", desc = "down" },
+    { key = "pgup", action = "revisions.page_up", scope = "revisions.diff_range", desc = "pgup" },
+    { key = "pgdown", action = "revisions.page_down", scope = "revisions.diff_range", desc = "pgdown" },
+
+    # revisions.new_between
+    { key = "enter", action = "revisions.new_between.apply", scope = "revisions.new_between", desc = "apply" },
+    { key = "space", action = "revisions.new_between.toggle_insert_before", scope = "revisions.new_between", desc = "select before" },
+    { key = "esc", action = "revisions.new_between.cancel", scope = "revisions.new_between", desc = "cancel" },
+    { key = ["up", "k"], action = "revisions.move_up", scope = "revisions.new_between", desc = "up" },
+    { key = ["down", "j"], action = "revisions.move_down", scope = "revisions.new_between", desc = "down" },
+    { key = "pgup", action = "revisions.page_up", scope = "revisions.new_between", desc = "pgup" },
+    { key = "pgdown", action = "revisions.page_down", scope = "revisions.new_between", desc = "pgdown" },
+
     # revisions.target_picker
     { key = "esc", action = "revisions.target_picker.cancel", scope = "revisions.target_picker", desc = "cancel" },
     { key = "enter", action = "revisions.target_picker.apply", scope = "revisions.target_picker", desc = "apply" },
     { key = "alt+enter", action = "revisions.target_picker.apply", scope = "revisions.target_picker", desc = "force apply", args = { force = true } },
-    { key = "up", action = "revisions.target_picker.move_up", scope = "revisions.target_picker", desc = "up" },
-    { key = "down", action = "revisions.target_picker.move_down", scope = "revisions.target_picker", desc = "down" },
+    { key = ["up", "ctrl+p"], action = "revisions.target_picker.move_up", scope = "revisions.target_picker", desc = "up" },
+    { key = ["down", "ctrl+n"], action = "revisions.target_picker.move_down", scope = "revisions.target_picker", desc = "down" },
     { key = "tab", action = "revisions.target_picker.autocomplete", scope = "revisions.target_picker", desc = "autocomplete" },
     { key = "shift+tab", action = "revisions.target_picker.autocomplete_back", scope = "revisions.target_picker", desc = "autocomplete back" },
 
@@ -250,8 +288,8 @@ bindings = [
     { key = "enter", action = "file_search.apply", scope = "file_search", desc = "apply" },
     { key = "ctrl+t", action = "file_search.toggle", scope = "file_search", desc = "toggle" },
     { key = "alt+e", action = "file_search.edit", scope = "file_search", desc = "edit" },
-    { key = "up", action = "file_search.move_up", scope = "file_search", desc = "up" },
-    { key = "down", action = "file_search.move_down", scope = "file_search", desc = "down" },
+    { key = ["up", "ctrl+p"], action = "file_search.move_up", scope = "file_search", desc = "up" },
+    { key = ["down", "ctrl+n"], action = "file_search.move_down", scope = "file_search", desc = "down" },
     { key = ["ctrl+u", "pgup"], action = "file_search.page_up", scope = "file_search", desc = "pgup" },
     { key = ["ctrl+d", "pgdown"], action = "file_search.page_down", scope = "file_search", desc = "pgdown" },
     { key = "ctrl+b", action = "file_search.preview_half_page_up", scope = "file_search", desc = "preview half up" },
@@ -307,6 +345,17 @@ bindings = [
     { key = "\"", action = "oplog.quick_search.prev", scope = "oplog.quick_search", desc = "prev" },
     { key = "esc", action = "oplog.quick_search.clear", scope = "oplog.quick_search", desc = "clear" },
 
+    # workspace
+    { key = ["up", "k"], action = "workspace.move_up", scope = "workspace", desc = "up" },
+    { key = ["down", "j"], action = "workspace.move_down", scope = "workspace", desc = "down" },
+    { key = "pgup", action = "workspace.page_up", scope = "workspace", desc = "pgup" },
+    { key = "pgdown", action = "workspace.page_down", scope = "workspace", desc = "pgdown" },
+    { key = "esc", action = "workspace.close", scope = "workspace", desc = "close" },
+    { key = "enter", action = "workspace.switch_workspace", scope = "workspace", desc = "switch" },
+    { key = "a", action = "workspace.add", scope = "workspace", desc = "add workspace" },
+    { key = "shift+f", action = "workspace.forget", scope = "workspace", desc = "forget workspace" },
+    { key = "shift+u", action = "workspace.update_stale", scope = "workspace", desc = "update stale" },
+
     # undo
     { key = "h", action = "undo.prev", scope = "undo", desc = "prev" },
     { key = "l", action = "undo.next", scope = "undo", desc = "next" },
@@ -331,6 +380,9 @@ bindings = [
     { key = ["left", "h"], action = "diff.left", scope = "diff", desc = "left" },
     { key = ["right", "l"], action = "diff.right", scope = "diff", desc = "right" },
     { key = "w", action = "diff.toggle_wrap", scope = "diff", desc = "toggle wrap" },
+    { key = "ctrl+t", action = "diff.target_picker", scope = "diff", desc = "target picker" },
+    { key = "[", action = "diff.prev_file", scope = "diff", desc = "prev file" },
+    { key = "]", action = "diff.next_file", scope = "diff", desc = "next file" },
     { key = "esc", action = "ui.cancel", scope = "diff", desc = "cancel" },
 
     # command history

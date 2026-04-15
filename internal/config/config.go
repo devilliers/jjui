@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-//go:embed default/*.toml
+//go:embed default/*.toml default/types.lua
 var configFS embed.FS
 
 var Current = loadDefaultConfig()
@@ -105,12 +105,14 @@ func (t *ThemeConfig) UnmarshalTOML(data any) error {
 }
 
 type UIConfig struct {
-	Theme  ThemeConfig      `toml:"theme"`
-	Colors map[string]Color `toml:"colors"`
+	Theme          ThemeConfig      `toml:"theme"`
+	Colors         map[string]Color `toml:"colors"`
+	SetWindowTitle bool             `toml:"set_window_title"`
 	// TODO(ilyagr): It might make sense to rename this to `auto_refresh_period` to match `--period` option
 	// once we have a mechanism to deprecate the old name softly.
-	AutoRefreshInterval        int `toml:"auto_refresh_interval"`
-	FlashMessageDisplaySeconds int `toml:"flash_message_display_seconds"`
+	AutoRefreshInterval        int  `toml:"auto_refresh_interval"`
+	FlashMessageDisplaySeconds int  `toml:"flash_message_display_seconds"`
+	MouseSupport               bool `toml:"mouse_support"`
 }
 
 func GetExpiringFlashMessageTimeout(c *Config) time.Duration {

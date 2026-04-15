@@ -29,11 +29,13 @@ const (
 	JJUIPrefix                  = "_PREFIX:"
 )
 
-type CommandArgs []string
-type CommandWithStdin struct {
-	Args  CommandArgs
-	Input string
-}
+type (
+	CommandArgs      []string
+	CommandWithStdin struct {
+		Args  CommandArgs
+		Input string
+	}
+)
 
 func ConfigListAll() CommandArgs {
 	return []string{"config", "list", "--color", "never", "--include-defaults", "--ignore-working-copy"}
@@ -63,6 +65,13 @@ func Log(revset string, limit int, jjTemplate string) CommandArgs {
 func New(revisions SelectedRevisions) CommandArgs {
 	args := []string{"new"}
 	args = append(args, revisions.AsArgs()...)
+	return args
+}
+
+func NewInsert(insertAfter SelectedRevisions, insertBefore SelectedRevisions) CommandArgs {
+	args := []string{"new"}
+	args = append(args, insertAfter.AsPrefixedArgs("--insert-after")...)
+	args = append(args, insertBefore.AsPrefixedArgs("--insert-before")...)
 	return args
 }
 
@@ -139,6 +148,10 @@ func Diff(revision string, fileName string, extraArgs ...string) CommandArgs {
 	return args
 }
 
+func DiffRange(from string, to string) CommandArgs {
+	return []string{"diff", "--from", from, "--to", to, "--color", "always", "--ignore-working-copy"}
+}
+
 func Restore(revision string, files []string, interactive bool) CommandArgs {
 	args := []string{"restore", "-c", revision}
 	if interactive {
@@ -178,8 +191,12 @@ func BookmarkSet(revision string, name string) CommandArgs {
 	return []string{"bookmark", "set", "-r", revision, name}
 }
 
+func exactStringPattern(value string) string {
+	return "exact:" + strconv.Quote(value)
+}
+
 func BookmarkMove(revision string, bookmark string, extraFlags ...string) CommandArgs {
-	args := []string{"bookmark", "move", bookmark, "--to", revision}
+	args := []string{"bookmark", "move", exactStringPattern(bookmark), "--to", revision}
 	if extraFlags != nil {
 		args = append(args, extraFlags...)
 	}
@@ -187,25 +204,25 @@ func BookmarkMove(revision string, bookmark string, extraFlags ...string) Comman
 }
 
 func BookmarkDelete(name string) CommandArgs {
-	return []string{"bookmark", "delete", name}
+	return []string{"bookmark", "delete", exactStringPattern(name)}
 }
 
 func BookmarkForget(name string) CommandArgs {
-	return []string{"bookmark", "forget", name}
+	return []string{"bookmark", "forget", exactStringPattern(name)}
 }
 
 func BookmarkTrack(name string, remote string) CommandArgs {
-	args := []string{"bookmark", "track", name}
+	args := []string{"bookmark", "track", exactStringPattern(name)}
 	if remote != "" {
-		args = append(args, "--remote", remote)
+		args = append(args, "--remote", exactStringPattern(remote))
 	}
 	return args
 }
 
 func BookmarkUntrack(name string, remote string) CommandArgs {
-	args := []string{"bookmark", "untrack", name}
+	args := []string{"bookmark", "untrack", exactStringPattern(name)}
 	if remote != "" {
-		args = append(args, "--remote", remote)
+		args = append(args, "--remote", exactStringPattern(remote))
 	}
 	return args
 }
@@ -378,14 +395,22 @@ func TemplatedArgs(templatedArgs []string, replacements map[string]string) Comma
 	return args
 }
 
-func Absorb(changeId string, files ...string) CommandArgs {
+func Absorb(changeId string, into []string, files ...string) CommandArgs {
 	args := []string{"absorb", "--from", changeId, "--color", "never"}
+	for _, target := range into {
+		args = append(args, "--into", target)
+	}
 	var escapedFiles []string
 	for _, file := range files {
 		escapedFiles = append(escapedFiles, EscapeFileName(file))
 	}
 	args = append(args, escapedFiles...)
 	return args
+}
+
+func AbsorbDefaultTargets(source string) CommandArgs {
+	revset := fmt.Sprintf("mutable() & ::%s", source)
+	return GetIdsFromRevset(revset)
 }
 
 func OpLogId(snapshot bool) CommandArgs {
@@ -451,8 +476,42 @@ func GetIdsFromRevset(revset string) CommandArgs {
 	return []string{"log", "-r", revset, "--color", "never", "--no-graph", "--quiet", "--ignore-working-copy", "--template", template}
 }
 
+func ResolveRevisionID(revision string) CommandArgs {
+	const template = `change_id.shortest() ++ ";" ++ commit_id.shortest() ++ "\n"`
+	return []string{"log", "-r", revision, "-n", "1", "--color", "never", "--no-graph", "--quiet", "--ignore-working-copy", "--template", template}
+}
+
 func RevsetValidate(revset string) CommandArgs {
 	return []string{"log", "-r", revset, "-n", "1", "--ignore-working-copy"}
+}
+
+func WorkspaceList() CommandArgs {
+	return []string{"workspace", "list", "--color", "always"}
+}
+
+func WorkspaceListRoots() CommandArgs {
+	return []string{"workspace", "list", "--color", "never", "-T", `name ++ "\t" ++ root ++ "\n"`}
+}
+
+func WorkspaceCurrent() CommandArgs {
+	return []string{"workspace", "root", "--color", "never"}
+}
+
+func WorkspaceAdd(destination string, name string) CommandArgs {
+	args := []string{"workspace", "add"}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
+	args = append(args, destination)
+	return args
+}
+
+func WorkspaceForget(name string) CommandArgs {
+	return []string{"workspace", "forget", name}
+}
+
+func WorkspaceUpdateStale() CommandArgs {
+	return []string{"workspace", "update-stale"}
 }
 
 func EscapeFileName(fileName string) string {

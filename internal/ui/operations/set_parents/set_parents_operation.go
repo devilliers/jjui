@@ -6,12 +6,10 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/jj"
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
-	"github.com/idursun/jjui/internal/ui/dispatch"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/operations"
@@ -20,7 +18,7 @@ import (
 
 var _ operations.Operation = (*Model)(nil)
 var _ common.Focusable = (*Model)(nil)
-var _ dispatch.ScopeProvider = (*Model)(nil)
+var _ common.ScopeProvider = (*Model)(nil)
 
 type Model struct {
 	context  *context.MainContext
@@ -28,7 +26,6 @@ type Model struct {
 	current  *jj.Commit
 	toRemove map[string]bool
 	toAdd    []string
-	styles   styles
 	parents  []string
 }
 
@@ -40,11 +37,11 @@ func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
-func (m *Model) Scopes() []dispatch.Scope {
-	return []dispatch.Scope{
+func (m *Model) Scopes() []common.Scope {
+	return []common.Scope{
 		{
 			Name:    actions.ScopeSetParents,
-			Leak:    dispatch.LeakAll,
+			Leak:    common.LeakAll,
 			Handler: m,
 		},
 	}
@@ -55,19 +52,22 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case intents.Intent:
 		cmd, _ := m.HandleIntent(msg)
 		return cmd
+	case common.SelectionChangedMsg:
+		selected, ok := msg.Item.(common.SelectedRevision)
+		if !ok {
+			return nil
+		}
+		return m.setSelectedRevision(&jj.Commit{ChangeId: selected.ChangeId, CommitId: selected.CommitId})
 	}
 	return nil
 }
 
 func (m *Model) ViewRect(_ *render.DisplayContext, _ layout.Box) {}
 
-type styles struct {
-	sourceMarker lipgloss.Style
-	targetMarker lipgloss.Style
-	dimmed       lipgloss.Style
-}
-
-func (m *Model) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+func (m *Model) setSelectedRevision(commit *jj.Commit) tea.Cmd {
+	if m.current.Equal(commit) {
+		return nil
+	}
 	m.current = commit
 	return nil
 }
@@ -119,18 +119,22 @@ func (m *Model) Render(commit *jj.Commit, renderPosition operations.RenderPositi
 	if renderPosition != operations.RenderBeforeChangeId {
 		return ""
 	}
+	sourceMarker := common.DefaultPalette.Get("set_parents source_marker")
+	targetMarker := common.DefaultPalette.Get("set_parents target_marker")
+	dimmedStyle := common.DefaultPalette.Get("set_parents dimmed")
+
 	if slices.Contains(m.toAdd, commit.GetChangeId()) {
-		return m.styles.sourceMarker.Render("<< add >>")
+		return sourceMarker.Render("<< add >>")
 	}
 	if m.toRemove[commit.GetChangeId()] {
-		return m.styles.sourceMarker.Render("<< remove >>")
+		return sourceMarker.Render("<< remove >>")
 	}
 
 	if slices.Contains(m.parents, commit.CommitId) {
-		return m.styles.dimmed.Render("<< parent >>")
+		return dimmedStyle.Render("<< parent >>")
 	}
 	if commit.GetChangeId() == m.target.GetChangeId() {
-		return m.styles.targetMarker.Render("<< to >>")
+		return targetMarker.Render("<< to >>")
 	}
 	return ""
 }
@@ -139,12 +143,7 @@ func (m *Model) Name() string {
 	return "set parents"
 }
 
-func NewModel(ctx *context.MainContext, to *jj.Commit) *Model {
-	styles := styles{
-		sourceMarker: common.DefaultPalette.Get("set_parents source_marker"),
-		targetMarker: common.DefaultPalette.Get("set_parents target_marker"),
-		dimmed:       common.DefaultPalette.Get("set_parents dimmed"),
-	}
+func NewModel(ctx *context.MainContext, to *jj.Commit, current *jj.Commit) *Model {
 	output, err := ctx.RunCommandImmediate(jj.GetParents(to.GetChangeId()))
 	if err != nil {
 		log.Println("Failed to get parents for commit", to.GetChangeId())
@@ -156,6 +155,6 @@ func NewModel(ctx *context.MainContext, to *jj.Commit) *Model {
 		toRemove: make(map[string]bool),
 		toAdd:    []string{},
 		target:   to,
-		styles:   styles,
+		current:  current,
 	}
 }

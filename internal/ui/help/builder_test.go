@@ -50,6 +50,21 @@ func TestBuildFromBindings_SameScopeLastBindingWins(t *testing.T) {
 	}, entries)
 }
 
+func TestBuildFromBindings_SameActionDifferentArgsRemainActive(t *testing.T) {
+	bindings := []config.BindingConfig{
+		{Action: "revisions.rebase.set_source", Scope: "revisions.rebase", Key: config.StringList{"r"}, Desc: "source: revision", Args: map[string]any{"source": "revision"}},
+		{Action: "revisions.rebase.set_source", Scope: "revisions.rebase", Key: config.StringList{"shift+b"}, Desc: "source: branch", Args: map[string]any{"source": "branch"}},
+		{Action: "revisions.rebase.set_source", Scope: "revisions.rebase", Key: config.StringList{"s"}, Desc: "source: descendants", Args: map[string]any{"source": "source"}},
+	}
+
+	entries := BuildFromBindings("revisions.rebase", bindings)
+	assert.Equal(t, []Entry{
+		{Label: "r", Desc: "source: revision"},
+		{Label: "shift+b", Desc: "source: branch"},
+		{Label: "s", Desc: "source: descendants"},
+	}, entries)
+}
+
 func TestBuildFromBindings_SameScopeDifferentActionsWithSameLeaf(t *testing.T) {
 	bindings := []config.BindingConfig{
 		{Action: "revset.edit", Scope: "revisions", Key: config.StringList{"shift+l"}, Desc: "revset"},

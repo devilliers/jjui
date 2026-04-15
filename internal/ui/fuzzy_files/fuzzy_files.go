@@ -21,9 +21,8 @@ import (
 
 type fuzzyFiles struct {
 	// restore
-	revset          string
-	commit          *jj.Commit
-	wasPreviewShown bool
+	revset string
+	commit *jj.Commit
 
 	cursor int
 	// enabled with ctrl+t again
@@ -32,10 +31,9 @@ type fuzzyFiles struct {
 	debounceTag   int
 
 	// search state
-	files   []string
+	paths   []string
 	max     int
 	matches fuzzy.Matches
-	styles  fuzzy_search.Styles
 }
 
 var debounceDuration = 250 * time.Millisecond
@@ -76,7 +74,7 @@ func (fzf *fuzzyFiles) Update(msg tea.Msg) tea.Cmd {
 		if fzf.revsetPreview {
 			return tea.Batch(
 				fzf.updateRevSet(),
-				newCmd(common.ShowPreview(true)),
+				newCmd(common.ShowPreview{}),
 			)
 		}
 	}
@@ -105,10 +103,7 @@ func (fzf *fuzzyFiles) handleIntent(intent intents.Intent) tea.Cmd {
 		fzf.moveCursor(intent.Delta)
 		return skipSearch
 	case intents.FileSearchCancel:
-		return tea.Batch(
-			common.UpdateRevSet(fzf.revset),
-			newCmd(common.ShowPreview(fzf.wasPreviewShown)),
-		)
+		return common.UpdateRevSet(fzf.revset)
 	case intents.FileSearchEdit:
 		path := fuzzy_search.SelectedMatch(fzf)
 		return newCmd(common.ExecMsg{
@@ -117,10 +112,13 @@ func (fzf *fuzzyFiles) handleIntent(intent intents.Intent) tea.Cmd {
 		})
 	case intents.FileSearchTogglePreview:
 		fzf.revsetPreview = !fzf.revsetPreview
-		return tea.Batch(
-			newCmd(common.ShowPreview(fzf.revsetPreview)),
-			fzf.updateRevSet(),
-		)
+		if fzf.revsetPreview {
+			return tea.Batch(
+				newCmd(common.ShowPreview{}),
+				fzf.updateRevSet(),
+			)
+		}
+		return fzf.updateRevSet()
 	case intents.FileSearchAccept:
 		return fzf.updateRevSet()
 	case intents.FileSearchPreviewScroll:
@@ -138,7 +136,7 @@ func (fzf *fuzzyFiles) handleIntent(intent intents.Intent) tea.Cmd {
 		}
 		// Dispatch to ui.go which handles preview scroll intents
 		return func() tea.Msg {
-			return intents.PreviewScroll{Kind: intent.Kind}
+			return intents.PreviewScroll(intent)
 		}
 	}
 	return nil
@@ -156,10 +154,6 @@ func (fzf *fuzzyFiles) moveCursor(inc int) {
 	fzf.cursor = n
 }
 
-func (fzf *fuzzyFiles) Styles() fuzzy_search.Styles {
-	return fzf.styles
-}
-
 func (fzf *fuzzyFiles) Max() int {
 	return fzf.max
 }
@@ -173,31 +167,40 @@ func (fzf *fuzzyFiles) SelectedMatch() int {
 }
 
 func (fzf *fuzzyFiles) Len() int {
-	return len(fzf.files)
+	return len(fzf.paths)
 }
 
 func (fzf *fuzzyFiles) String(i int) string {
-	n := len(fzf.files)
+	n := len(fzf.paths)
 	if i < 0 || i >= n {
 		return ""
 	}
-	return fzf.files[i]
+	return fzf.paths[i]
 }
 
 func (fzf *fuzzyFiles) search(input string) {
 	src := &fuzzy_search.RefinedSource{Source: fzf}
 	fzf.cursor = 0
-	fzf.matches = src.Search(input, fzf.max)
+	// Generate all candidate matches; the display is capped to max in the view.
+	fzf.matches = src.Search(input, fzf.Len())
 }
 
 func (fzf *fuzzyFiles) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	// Cap the list height to half of the available view height.
+	// Reserve one line for the title.
+	if desired := box.R.Dy()/2 - 1; desired > 0 {
+		fzf.max = desired
+	}
 	content := fzf.viewContent()
 	if content == "" {
 		return
 	}
 	_, h := lipgloss.Size(content)
 	rect := layout.Rect(box.R.Min.X, box.R.Max.Y-h, box.R.Dx(), h)
+	background := common.DefaultPalette.Get("status text")
+	dl.AddFill(rect, ' ', background, render.ZFuzzyOverlay)
 	dl.AddDraw(rect, content, render.ZFuzzyOverlay)
+	dl.AddHighlight(rect, background, render.ZFuzzyOverlay)
 }
 
 func (fzf *fuzzyFiles) viewContent() string {
@@ -205,12 +208,12 @@ func (fzf *fuzzyFiles) viewContent() string {
 	if shown == 0 {
 		return ""
 	}
-	title := fzf.styles.SelectedMatch.Render(
+	title := common.DefaultPalette.Get("status title").Render(
 		"  ",
 		strconv.Itoa(shown),
 		"of",
-		strconv.Itoa(len(fzf.files)),
-		"files present at revision",
+		strconv.Itoa(len(fzf.paths)),
+		"paths present at revision",
 		fzf.commit.GetChangeId(),
 		" ",
 	)
@@ -220,14 +223,47 @@ func (fzf *fuzzyFiles) viewContent() string {
 
 func NewModel(msg common.FileSearchMsg) fuzzy_search.Model {
 	model := &fuzzyFiles{
-		revset:          msg.Revset,
-		wasPreviewShown: msg.PreviewShown,
-		max:             30,
-		commit:          msg.Commit,
-		files:           strings.Split(string(msg.RawFileOut), "\n"),
-		styles:          fuzzy_search.NewStyles(),
+		revset: msg.Revset,
+		max:    30,
+		commit: msg.Commit,
+		paths:  buildPathEntries(msg.RawFileOut),
 	}
 	return model
+}
+
+func buildPathEntries(rawFileOut []byte) []string {
+	lines := strings.Split(string(rawFileOut), "\n")
+	entries := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+
+	add := func(entry string) {
+		if entry == "" {
+			return
+		}
+		if _, ok := seen[entry]; ok {
+			return
+		}
+		seen[entry] = struct{}{}
+		entries = append(entries, entry)
+	}
+
+	for _, file := range lines {
+		if file == "" {
+			continue
+		}
+
+		// jj repo paths are slash-separated on all platforms.
+		// Add each ancestor directory (e.g. "a/b/c.go" adds "a/" then "a/b/").
+		for i := 0; i < len(file); i++ {
+			if file[i] == '/' {
+				add(file[:i+1])
+			}
+		}
+
+		add(file)
+	}
+
+	return entries
 }
 
 func fileSearchNavigateDelta(delta int) int {

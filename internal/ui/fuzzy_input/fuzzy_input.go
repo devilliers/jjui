@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/idursun/jjui/internal/config"
+	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/fuzzy_search"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
@@ -24,7 +25,6 @@ type model struct {
 	cursor      int
 	max         int
 	matches     fuzzy.Matches
-	styles      fuzzy_search.Styles
 	suggestMode config.SuggestMode
 }
 
@@ -73,10 +73,6 @@ func (fzf *model) handleIntent(intent intents.Intent) tea.Cmd {
 
 func (fzf *model) suggestEnabled() bool { return fzf.suggestMode != config.SuggestModeOff }
 
-func (fzf *model) hasSuggestions() bool {
-	return fzf.suggestEnabled() && len(fzf.matches) > 0
-}
-
 func (fzf *model) moveCursor(inc int) {
 	l := min(len(fzf.matches), fzf.max)
 	if !fzf.suggestEnabled() {
@@ -96,10 +92,6 @@ func (fzf *model) moveCursor(inc int) {
 		fzf.input.SetValue(fzf.String(n))
 		fzf.input.CursorEnd()
 	}
-}
-
-func (fzf *model) Styles() fuzzy_search.Styles {
-	return fzf.styles
 }
 
 func (fzf *model) Max() int {
@@ -185,7 +177,7 @@ func (fzf *model) viewContent() string {
 		strconv.Itoa(matches),
 		strconv.Itoa(fzf.Len()),
 	)
-	title = fzf.styles.SelectedMatch.Render(title)
+	title = common.DefaultPalette.Get("status title").Render(title)
 	return lipgloss.JoinVertical(0, title, view)
 }
 
@@ -202,7 +194,6 @@ func NewModel(input *textinput.Model, suggestions []string) fuzzy_search.Model {
 		input:       input,
 		suggestions: suggestions,
 		max:         30,
-		styles:      fuzzy_search.NewStyles(),
 		suggestMode: suggestMode,
 	}
 	return fzf

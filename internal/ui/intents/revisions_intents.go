@@ -101,6 +101,7 @@ const (
 //jjui:bind scope=revisions.squash action=jump_to_working_copy set=Target:TargetWorkingCopy
 //jjui:bind scope=revisions.duplicate action=jump_to_working_copy set=Target:TargetWorkingCopy
 //jjui:bind scope=revisions.abandon action=jump_to_working_copy set=Target:TargetWorkingCopy
+//jjui:bind scope=revisions.absorb action=jump_to_working_copy set=Target:TargetWorkingCopy
 //jjui:bind scope=revisions.set_parents action=jump_to_working_copy set=Target:TargetWorkingCopy
 type Navigate struct {
 	Delta       int              // +N down, -N up
@@ -142,12 +143,22 @@ type DiffEdit struct {
 
 func (DiffEdit) isIntent() {}
 
-//jjui:bind scope=revisions action=absorb
-type Absorb struct {
+//jjui:bind scope=revisions action=open_absorb
+type OpenAbsorb struct {
 	Selected *jj.Commit
 }
 
-func (Absorb) isIntent() {}
+func (OpenAbsorb) isIntent() {}
+
+//jjui:bind scope=revisions.absorb action=toggle_select
+type AbsorbToggleSelect struct{}
+
+func (AbsorbToggleSelect) isIntent() {}
+
+//jjui:bind scope=revisions.absorb action=select_descendants
+type AbsorbSelectDescendants struct{}
+
+func (AbsorbSelectDescendants) isIntent() {}
 
 //jjui:bind scope=revisions action=open_abandon
 type OpenAbandon struct {
@@ -179,6 +190,40 @@ type OpenSetParents struct {
 }
 
 func (OpenSetParents) isIntent() {}
+
+//jjui:bind scope=revisions action=open_diff_range
+type OpenDiffRange struct{}
+
+func (OpenDiffRange) isIntent() {}
+
+//jjui:bind scope=revisions action=open_new_between
+type OpenNewBetween struct{}
+
+func (OpenNewBetween) isIntent() {}
+
+//jjui:bind scope=revisions.diff_range action=swap
+type DiffRangeSwap struct{}
+
+func (DiffRangeSwap) isIntent() {}
+
+type DiffArgTarget int
+
+const (
+	DiffArgTargetTo DiffArgTarget = iota
+	DiffArgTargetFrom
+)
+
+//jjui:bind scope=revisions.diff_range action=target_picker set=Target:$enum(target)
+type DiffRangeOpenTargetPicker struct {
+	Target DiffArgTarget
+}
+
+func (DiffRangeOpenTargetPicker) isIntent() {}
+
+//jjui:bind scope=revisions.new_between action=toggle_insert_before
+type NewBetweenToggleInsertBefore struct{}
+
+func (NewBetweenToggleInsertBefore) isIntent() {}
 
 //jjui:bind scope=revisions.set_parents action=toggle_select
 type SetParentsToggleSelect struct{}

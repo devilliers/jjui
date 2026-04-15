@@ -107,6 +107,42 @@ func TestPalette_Get(t *testing.T) {
 			},
 			want: lipgloss.NewStyle().Underline(true),
 		},
+		{
+			name: "selected substyle inherits semantic style before selected state",
+			args: args{
+				selector: "menu selected shortcut",
+				styles: map[string]lipgloss.Style{
+					"selected":      lipgloss.NewStyle().Foreground(lipgloss.Color(Cyan)),
+					"menu selected": lipgloss.NewStyle().Background(lipgloss.Color(Black)).Bold(true),
+					"menu shortcut": lipgloss.NewStyle().Foreground(lipgloss.Color(Yellow)),
+				},
+			},
+			want: lipgloss.NewStyle().Foreground(lipgloss.Color(Yellow)).Background(lipgloss.Color(Black)).Bold(true),
+		},
+		{
+			name: "partial exact selected substyle preserves semantic foreground",
+			args: args{
+				selector: "bookmarks menu selected shortcut",
+				styles: map[string]lipgloss.Style{
+					"shortcut":               lipgloss.NewStyle().Foreground(lipgloss.Color(Yellow)),
+					"menu selected":          lipgloss.NewStyle().Foreground(lipgloss.Color(Cyan)).Background(lipgloss.Color(Black)).Bold(true),
+					"menu selected shortcut": lipgloss.NewStyle().Background(lipgloss.Color(Blue)),
+				},
+			},
+			want: lipgloss.NewStyle().Foreground(lipgloss.Color(Yellow)).Background(lipgloss.Color(Blue)).Bold(true),
+		},
+		{
+			name: "exact selected substyle overrides semantic fallback",
+			args: args{
+				selector: "menu selected shortcut",
+				styles: map[string]lipgloss.Style{
+					"menu selected":          lipgloss.NewStyle().Background(lipgloss.Color(Black)),
+					"menu shortcut":          lipgloss.NewStyle().Foreground(lipgloss.Color(Yellow)),
+					"menu selected shortcut": lipgloss.NewStyle().Foreground(lipgloss.Color(Green)),
+				},
+			},
+			want: lipgloss.NewStyle().Foreground(lipgloss.Color(Green)).Background(lipgloss.Color(Black)),
+		},
 	}
 
 	for _, tt := range tests {
@@ -262,6 +298,43 @@ func TestPaletteUpdate_InheritsWhenAttributeOmitted(t *testing.T) {
 
 	got := p.Get("revisions matched")
 	assert.True(t, got.GetUnderline())
+}
+
+func TestPaletteUpdate_ClearsCachedStyles(t *testing.T) {
+	p := NewPalette()
+	p.Update(map[string]config.Color{
+		"text": {Fg: Red},
+	})
+
+	// Populate the cache.
+	got := p.Get("text")
+	assert.Equal(t, lipgloss.Color("1"), got.GetForeground())
+
+	// A second Update with different colors should invalidate the cache.
+	p.Update(map[string]config.Color{
+		"text": {Fg: Blue},
+	})
+
+	got = p.Get("text")
+	assert.Equal(t, lipgloss.Color("4"), got.GetForeground())
+}
+
+func TestPaletteUpdate_ClearsStaleKeysFromPreviousTheme(t *testing.T) {
+	p := NewPalette()
+	p.Update(map[string]config.Color{
+		"text":      {Fg: Red},
+		"dark only": {Fg: Green},
+	})
+
+	assert.Equal(t, lipgloss.Color("2"), p.Get("dark only").GetForeground())
+
+	// Switch to a theme that lacks the "dark only" key.
+	p.Update(map[string]config.Color{
+		"text": {Fg: Blue},
+	})
+
+	got := p.Get("dark only")
+	assert.Equal(t, lipgloss.NewStyle().GetForeground(), got.GetForeground())
 }
 
 func TestPaletteUpdate_ExplicitFalseOverridesInheritedAttribute(t *testing.T) {

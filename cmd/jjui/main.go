@@ -41,12 +41,13 @@ func getVersion() string {
 }
 
 var (
-	revset     string
-	period     int
-	limit      int
-	version    bool
-	editConfig bool
-	help       bool
+	revset          string
+	period          int
+	limit           int
+	version         bool
+	editConfig      bool
+	installLuaTypes bool
+	help            bool
 )
 
 func init() {
@@ -58,6 +59,7 @@ func init() {
 	flag.IntVar(&limit, "n", 0, "Number of revisions to show (alias for --limit)")
 	flag.BoolVar(&version, "version", false, "Show version information")
 	flag.BoolVar(&editConfig, "config", false, "Open configuration file in $EDITOR")
+	flag.BoolVar(&installLuaTypes, "install-lua-types", false, "Write Lua type definitions to config directory for LuaLS autocomplete")
 	flag.BoolVar(&help, "help", false, "Show help information")
 
 	flag.Usage = func() {
@@ -68,7 +70,11 @@ func init() {
 }
 
 func getJJRootDir(location string) (string, error) {
-	cmd := exec.Command("jj", "root", "--color=always")
+	jjBin, err := exec.LookPath("jj")
+	if err != nil {
+		jjBin = "jj"
+	}
+	cmd := exec.Command(jjBin, "root", "--color=always")
 	cmd.Dir = location
 
 	output, err := cmd.Output()
@@ -86,6 +92,8 @@ func main() {
 }
 
 func run() int {
+	// so that sub processes know they are spawn by jjui, good for `jj` condition variables
+	os.Setenv("JJUI", "1")
 	askpassServer := askpass.NewUnstartedServer("JJUI")
 	if askpassServer.IsSubprocess() {
 		return 0
@@ -98,6 +106,19 @@ func run() int {
 		return 0
 	case version:
 		fmt.Println(getVersion())
+		return 0
+	case installLuaTypes:
+		result, err := config.SetupLuaTypes()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Lua type definitions written to %s\n", result.TypesPath)
+		if result.LuaRCCreated {
+			fmt.Printf("LuaLS config written to %s\n", result.LuaRCPath)
+		} else {
+			fmt.Printf("LuaLS config already exists at %s; leaving it unchanged\n", result.LuaRCPath)
+		}
 		return 0
 	case editConfig:
 		return config.Edit()
@@ -207,37 +228,13 @@ func run() int {
 		appContext.TerminalThemeDetected = true
 	}
 
-	var defaultThemeName string
-	if appContext.TerminalHasDarkBackground {
-		defaultThemeName = "default_dark"
-	} else {
-		defaultThemeName = "default_light"
-	}
-
-	theme, err = config.LoadEmbeddedTheme(defaultThemeName)
+	theme, err = config.ResolveTheme(appContext.TerminalHasDarkBackground, appContext.JJConfig.GetApplicableColors())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading default theme '%s': %v\n", defaultThemeName, err)
+		fmt.Fprintf(os.Stderr, "Error loading theme: %v\n", err)
 		return 1
 	}
 
-	var userThemeName string
-	if appContext.TerminalHasDarkBackground {
-		userThemeName = config.Current.UI.Theme.Dark
-	} else {
-		userThemeName = config.Current.UI.Theme.Light
-	}
-
-	if userThemeName != "" {
-		theme, err = config.LoadTheme(userThemeName, theme)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading user theme '%s': %v\n", userThemeName, err)
-			return 1
-		}
-	}
-
 	common.DefaultPalette.Update(theme)
-	common.DefaultPalette.Update(appContext.JJConfig.GetApplicableColors())
-	common.DefaultPalette.Update(config.Current.UI.Colors)
 
 	if period >= 0 {
 		config.Current.UI.AutoRefreshInterval = period

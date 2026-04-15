@@ -15,11 +15,13 @@ import (
 )
 
 // SelectedItem type aliases to break circular dependencies
-type SelectedItem = common.SelectedItem
-type SelectedRevision = common.SelectedRevision
-type SelectedCommit = common.SelectedCommit
-type SelectedFile = common.SelectedFile
-type SelectedOperation = common.SelectedOperation
+type (
+	SelectedItem      = common.SelectedItem
+	SelectedRevision  = common.SelectedRevision
+	SelectedCommit    = common.SelectedCommit
+	SelectedFile      = common.SelectedFile
+	SelectedOperation = common.SelectedOperation
+)
 
 type MainContext struct {
 	CommandRunner
@@ -77,11 +79,28 @@ func (ctx *MainContext) SetSelectedItem(item SelectedItem) tea.Cmd {
 	if item == nil {
 		return nil
 	}
-	if item.Equal(ctx.SelectedItem) {
+	if selectedItemsEqual(item, ctx.SelectedItem) {
 		return nil
 	}
 	ctx.SelectedItem = item
 	return common.SelectionChanged(item)
+}
+
+func (ctx *MainContext) SetSelection(snapshot common.SelectionSnapshot) tea.Cmd {
+	highlightChanged := !selectedItemsEqual(snapshot.Highlighted, ctx.SelectedItem)
+	ctx.SelectedItem = snapshot.Highlighted
+	ctx.CheckedItems = slices.Clone(snapshot.Checked)
+	if highlightChanged {
+		return common.SelectionChanged(snapshot.Highlighted)
+	}
+	return nil
+}
+
+func selectedItemsEqual(a, b SelectedItem) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(b)
 }
 
 // CreateReplacements creates context-aware replacements for exec input.
@@ -124,6 +143,13 @@ func (ctx *MainContext) CreateReplacements() map[string]string {
 	}
 
 	return replacements
+}
+
+func (ctx *MainContext) ChangeWorkspace(path string) {
+	ctx.Location = path
+	if runner, ok := ctx.CommandRunner.(*MainCommandRunner); ok {
+		runner.Location = path
+	}
 }
 
 func (ctx *MainContext) ToggleCheckedItem(item SelectedRevision) {

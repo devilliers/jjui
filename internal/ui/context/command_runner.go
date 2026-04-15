@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +17,29 @@ import (
 	"github.com/idursun/jjui/internal/askpass"
 	"github.com/idursun/jjui/internal/ui/common"
 )
+
+// jjBin is the resolved absolute path to the jj binary.
+// We prefer the user's profile installation over anything in the nix build
+// environment (which may pin an older version via a devshell).
+var jjBin = func() string {
+	// Walk PATH entries, skipping /nix/store/ paths to avoid picking up
+	// a jj pinned by a nix devshell instead of the user's installed version.
+	pathDirs := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))
+	for _, dir := range pathDirs {
+		if strings.HasPrefix(dir, "/nix/store/") {
+			continue
+		}
+		candidate := dir + "/jj"
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	// Fall back to normal PATH lookup.
+	if path, err := exec.LookPath("jj"); err == nil {
+		return path
+	}
+	return "jj"
+}()
 
 type CommandRunner interface {
 	RunCommandImmediate(args []string) ([]byte, error)
@@ -37,7 +59,7 @@ type MainCommandRunner struct {
 func (a *MainCommandRunner) nextID() int { return int(a.idCounter.Add(1)) }
 
 func (a *MainCommandRunner) RunCommandImmediateWithEnv(args []string, env []string) ([]byte, error) {
-	c := exec.Command("jj", args...)
+	c := exec.Command(jjBin, args...)
 	c.Dir = a.Location
 	if len(env) > 0 {
 		c.Env = append(os.Environ(), env...)
@@ -90,7 +112,7 @@ func (a *MainCommandRunner) runCommandWithInput(args []string, input *string, co
 			if !slices.Contains(args, "--color") {
 				args = append([]string{"--color", "always"}, args...)
 			}
-			c := exec.Command("jj", args...)
+			c := exec.Command(jjBin, args...)
 			c.Dir = a.Location
 			c.Env = append(os.Environ(), env...)
 
@@ -122,11 +144,7 @@ func (a *MainCommandRunner) runCommandWithInput(args []string, input *string, co
 			if err != nil {
 				var exitError *exec.ExitError
 				if errors.As(err, &exitError) {
-					msg := output.String()
-					if len(env) == 0 && slices.Contains([]string{"linux", "darwin"}, runtime.GOOS) {
-						msg += "\nHint: enable ssh.hijack_askpass if you expected a password prompt (e.g. ssh passphrase)"
-					}
-					err = errors.New(msg)
+					err = errors.New(output.String())
 				}
 			}
 			return common.CommandCompletedMsg{
@@ -153,25 +171,19 @@ func (a *MainCommandRunner) RunCommand(args []string, continuations ...tea.Cmd) 
 }
 
 func (a *MainCommandRunner) RunInteractiveCommand(args []string, continuation tea.Cmd) tea.Cmd {
-	id := a.nextID()
-	command := "jj " + strings.Join(args, " ")
-	c := exec.Command("jj", args...)
+	c := exec.Command(jjBin, args...)
 	errBuffer := &bytes.Buffer{}
 	c.Stderr = errBuffer
 	c.Dir = a.Location
-	return tea.Batch(
-		func() tea.Msg {
-			return common.CommandRunningMsg{ID: id, Command: command}
-		},
-		tea.ExecProcess(c, func(err error) tea.Msg {
-			if err != nil {
-				return common.CommandCompletedMsg{ID: id, Err: errors.New(errBuffer.String())}
-			}
-			return tea.Batch(continuation, func() tea.Msg {
-				return common.CommandCompletedMsg{ID: id, Err: nil}
-			})()
-		}),
-	)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		if err != nil {
+			return common.CommandCompletedMsg{Err: errors.New(errBuffer.String())}
+		}
+		if continuation != nil {
+			return continuation()
+		}
+		return nil
+	})
 }
 
 type StreamingCommand struct {

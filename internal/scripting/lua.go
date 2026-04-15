@@ -3,7 +3,9 @@ package scripting
 import (
 	stdcontext "context"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
@@ -34,6 +36,8 @@ type Runner struct {
 	resumeArgs []lua.LValue
 	done       bool
 }
+
+var nextActionCompletionID atomic.Uint64
 
 func RunScript(ctx *uicontext.MainContext, src string) (*Runner, tea.Cmd, error) {
 	L, err := vmFromContext(ctx)
@@ -310,6 +314,10 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 		}
 		return yieldStep(L, step{cmd: intents.Invoke(intent)})
 	})
+	setThemeFn := L.NewFunction(func(L *lua.LState) int {
+		name := L.CheckString(1)
+		return yieldStep(L, step{cmd: intents.Invoke(intents.ChangeTheme{Name: name})})
+	})
 	copyToClipboardFn := L.NewFunction(func(L *lua.LState) int {
 		text := L.CheckString(1)
 		if err := clipboard.WriteAll(text); err != nil {
@@ -381,7 +389,7 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 		return yieldStep(L, step{cmd: choose.ShowWithTitle(options, "", false), matcher: matchChoose})
 	})
 	inputFn := L.NewFunction(func(L *lua.LState) int {
-		var title, prompt string
+		var title, prompt, value string
 		if L.GetTop() == 1 {
 			if tbl, ok := L.Get(1).(*lua.LTable); ok {
 				if titleVal := tbl.RawGetString("title"); titleVal != lua.LNil {
@@ -390,16 +398,35 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 				if promptVal := tbl.RawGetString("prompt"); promptVal != lua.LNil {
 					prompt = promptVal.String()
 				}
-				return yieldStep(L, step{cmd: input.ShowWithTitle(title, prompt), matcher: matchInput})
+				if valueVal := tbl.RawGetString("value"); valueVal != lua.LNil {
+					value = valueVal.String()
+				}
+				return yieldStep(L, step{cmd: input.ShowWithTitle(title, prompt, value), matcher: matchInput})
 			}
 		}
-		return yieldStep(L, step{cmd: input.ShowWithTitle("", ""), matcher: matchInput})
+		return yieldStep(L, step{cmd: input.ShowWithTitle("", "", ""), matcher: matchInput})
 	})
 	waitCloseFn := L.NewFunction(func(L *lua.LState) int {
 		return yieldStep(L, step{matcher: matchCloseViewMsg})
 	})
 	waitRefreshFn := L.NewFunction(func(L *lua.LState) int {
 		return yieldStep(L, step{matcher: matchUpdateRevisionsSuccess})
+	})
+	changeWsFn := L.NewFunction(func(L *lua.LState) int {
+		path := L.CheckString(1)
+		prev := ctx.Location
+		ctx.ChangeWorkspace(path)
+		out, err := ctx.RunCommandImmediate([]string{"root"})
+		if err != nil {
+			ctx.ChangeWorkspace(prev)
+			L.Push(lua.LNil)
+			L.Push(lua.LString("not a jj repo: " + path))
+			return 2
+		}
+		ctx.ChangeWorkspace(strings.TrimSpace(string(out)))
+		L.Push(lua.LBool(true))
+		L.Push(lua.LNil)
+		return 2
 	})
 
 	// make sure we have a `jjui` namespace
@@ -411,6 +438,7 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 	root.RawSetString("jj_interactive", jjInteractiveFn)
 	root.RawSetString("jj", jjFn)
 	root.RawSetString("flash", flashFn)
+	root.RawSetString("set_theme", setThemeFn)
 	root.RawSetString("copy_to_clipboard", copyToClipboardFn)
 	root.RawSetString("exec_shell", execShellFn)
 	root.RawSetString("split_lines", splitLinesFn)
@@ -418,6 +446,7 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 	root.RawSetString("input", inputFn)
 	root.RawSetString("wait_close", waitCloseFn)
 	root.RawSetString("wait_refresh", waitRefreshFn)
+	root.RawSetString("change_workspace", changeWsFn)
 	builtinRoot := L.NewTable()
 	root.RawSetString("builtin", builtinRoot)
 	registerGeneratedActionAPI(L, root, false)
@@ -438,6 +467,7 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 	L.SetGlobal("jj_interactive", jjInteractiveFn)
 	L.SetGlobal("jj", jjFn)
 	L.SetGlobal("flash", flashFn)
+	L.SetGlobal("set_theme", setThemeFn)
 	L.SetGlobal("copy_to_clipboard", copyToClipboardFn)
 	L.SetGlobal("exec_shell", execShellFn)
 	L.SetGlobal("split_lines", splitLinesFn)
@@ -445,6 +475,7 @@ func registerAPI(L *lua.LState, ctx *uicontext.MainContext) {
 	L.SetGlobal("input", inputFn)
 	L.SetGlobal("wait_close", waitCloseFn)
 	L.SetGlobal("wait_refresh", waitRefreshFn)
+	L.SetGlobal("change_workspace", changeWsFn)
 }
 
 func registerGeneratedActionAPI(L *lua.LState, root *lua.LTable, builtIn bool) {
@@ -500,13 +531,15 @@ func generatedActionFn(L *lua.LState, canonical string, builtIn bool) *lua.LFunc
 		} else {
 			args = optionalLuaMapArg(L, 1)
 		}
+		completionID := strconv.FormatUint(nextActionCompletionID.Add(1), 10)
 		return yieldStep(L, step{cmd: func() tea.Msg {
 			return common.DispatchActionMsg{
-				Action:  canonical,
-				Args:    args,
-				BuiltIn: builtIn,
+				Action:       canonical,
+				Args:         args,
+				BuiltIn:      builtIn,
+				CompletionID: completionID,
 			}
-		}})
+		}, matcher: matchActionCompleted(completionID)})
 	})
 }
 
@@ -672,6 +705,13 @@ func matchCloseViewMsg(msg tea.Msg) (bool, []lua.LValue) {
 		return true, []lua.LValue{lua.LBool(closeMsg.Applied)}
 	}
 	return false, nil
+}
+
+func matchActionCompleted(id string) func(tea.Msg) (bool, []lua.LValue) {
+	return func(msg tea.Msg) (bool, []lua.LValue) {
+		completed, ok := msg.(common.ActionCompletedMsg)
+		return ok && completed.ID == id, nil
+	}
 }
 
 func matchChoose(msg tea.Msg) (bool, []lua.LValue) {
