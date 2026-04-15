@@ -7,17 +7,17 @@ import (
 	"github.com/idursun/jjui/internal/screen"
 )
 
-func parseRows(reader io.Reader) []row {
+func parseRows(reader io.Reader, roots map[string]string) []row {
 	var rows []row
 	rawSegments := screen.ParseFromReader(reader)
 
 	for segmentedLine := range screen.BreakNewLinesIter(rawSegments) {
 		rl := newRowLine(segmentedLine)
-		// Each line in workspace list output represents a workspace.
-		// The workspace name is the first segment before the ":"
 		name := extractWorkspaceName(segmentedLine)
+		root := roots[name]
 		rows = append(rows, row{
 			Name:  name,
+			Root:  root,
 			Lines: []*rowLine{&rl},
 		})
 	}
@@ -25,8 +25,6 @@ func parseRows(reader io.Reader) []row {
 }
 
 func extractWorkspaceName(segments []*screen.Segment) string {
-	// The workspace list output format is: "name: change_id commit_id description"
-	// We concatenate all segment text and extract the name before the first ":"
 	var sb strings.Builder
 	for _, seg := range segments {
 		sb.WriteString(seg.Text)
@@ -36,4 +34,17 @@ func extractWorkspaceName(segments []*screen.Segment) string {
 		return strings.TrimSpace(line[:idx])
 	}
 	return strings.TrimSpace(line)
+}
+
+// parseRoots parses the output of WorkspaceListRoots into a name→root map.
+// Each line is "name\troot".
+func parseRoots(output []byte) map[string]string {
+	roots := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 {
+			roots[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return roots
 }

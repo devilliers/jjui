@@ -3,7 +3,6 @@ package workspace
 import (
 	"bytes"
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -104,7 +103,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case input.SelectedMsg:
 		if m.pendingAdd {
 			m.pendingAdd = false
-			path := strings.TrimSpace(msg.Value)
+			path := msg.Value
 			if path == "" {
 				return nil
 			}
@@ -191,12 +190,9 @@ func (m *Model) add() tea.Cmd {
 }
 
 func (m *Model) runAdd(path string) tea.Cmd {
-	return func() tea.Msg {
-		return common.ExecMsg{
-			Line: fmt.Sprintf("workspace add %s", path),
-			Mode: common.ExecJJ,
-		}
-	}
+	return m.context.RunCommand(jj.WorkspaceAdd(path, ""), func() tea.Msg {
+		return common.CommandCompletedMsg{}
+	})
 }
 
 func (m *Model) forget(intent intents.WorkspaceForget) tea.Cmd {
@@ -229,20 +225,22 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 		}
 		name = m.rows[m.cursor].Name
 	}
-	if name == "" {
-		return nil
+
+	// Find the root path from the already-loaded workspace data.
+	for _, r := range m.rows {
+		if r.Name == name && r.Root != "" {
+			root := r.Root
+			return func() tea.Msg {
+				return SwitchWorkspaceMsg{WorkspaceRoot: root}
+			}
+		}
 	}
 
 	return func() tea.Msg {
-		output, err := m.context.RunCommandImmediate(jj.WorkspaceRoot(name))
-		if err != nil {
-			return intents.AddMessage{Text: fmt.Sprintf("Failed to get workspace root: %v", err), Err: err}
+		return intents.AddMessage{
+			Text: fmt.Sprintf("Could not find root for workspace %q", name),
+			Err:  fmt.Errorf("workspace root not found"),
 		}
-		root := strings.TrimSpace(string(output))
-		if root == "" {
-			return intents.AddMessage{Text: "Workspace root is empty", Err: fmt.Errorf("empty workspace root")}
-		}
-		return SwitchWorkspaceMsg{WorkspaceRoot: root}
 	}
 }
 
@@ -307,12 +305,17 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 
 func (m *Model) load() tea.Cmd {
 	return func() tea.Msg {
+		// Fetch roots (name → path mapping) first
+		rootOutput, _ := m.context.RunCommandImmediate(jj.WorkspaceListRoots())
+		roots := parseRoots(rootOutput)
+
+		// Fetch colored display output
 		output, err := m.context.RunCommandImmediate(jj.WorkspaceList())
 		if err != nil {
 			panic(err)
 		}
 
-		rows := parseRows(bytes.NewReader(output))
+		rows := parseRows(bytes.NewReader(output), roots)
 		return updateWorkspaceMsg{Rows: rows}
 	}
 }
@@ -327,12 +330,4 @@ func New(context *context.MainContext) *Model {
 	}
 	m.listRenderer = render.NewListRenderer(WorkspaceScrollMsg{})
 	return m
-}
-
-// SelectedWorkspaceName returns the name of the workspace currently under the cursor.
-func (m *Model) SelectedWorkspaceName() string {
-	if m.cursor >= 0 && m.cursor < len(m.rows) {
-		return m.rows[m.cursor].Name
-	}
-	return ""
 }
