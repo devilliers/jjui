@@ -37,3 +37,10 @@ func (WorkspaceForget) isIntent() {}
 type WorkspaceUpdateStale struct{}
 
 func (WorkspaceUpdateStale) isIntent() {}
+
+//jjui:bind scope=workspace action=switch_workspace
+type WorkspaceSwitch struct {
+	WorkspaceName string
+}
+
+func (WorkspaceSwitch) isIntent() {}

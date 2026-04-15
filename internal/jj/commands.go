@@ -476,6 +476,14 @@ func WorkspaceUpdateStale() CommandArgs {
 	return []string{"workspace", "update-stale"}
 }
 
+func WorkspaceRoot(name string) CommandArgs {
+	args := []string{"workspace", "root"}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
+	return args
+}
+
 func EscapeFileName(fileName string) string {
 	// Escape backslashes and quotes in the file name for shell compatibility
 	if strings.Contains(fileName, "\\") {

@@ -314,6 +314,7 @@ bindings = [
     { key = "pgup", action = "workspace.page_up", scope = "workspace", desc = "pgup" },
     { key = "pgdown", action = "workspace.page_down", scope = "workspace", desc = "pgdown" },
     { key = "esc", action = "workspace.close", scope = "workspace", desc = "close" },
+    { key = "enter", action = "workspace.switch_workspace", scope = "workspace", desc = "switch" },
     { key = "a", action = "workspace.add", scope = "workspace", desc = "add workspace" },
     { key = "shift+f", action = "workspace.forget", scope = "workspace", desc = "forget workspace" },
     { key = "shift+u", action = "workspace.update_stale", scope = "workspace", desc = "update stale" },

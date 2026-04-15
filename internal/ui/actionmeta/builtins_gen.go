@@ -276,6 +276,7 @@ var builtInActionScopes = map[string][]string{
 	"workspace.move_up":                          {"workspace"},
 	"workspace.page_down":                        {"workspace"},
 	"workspace.page_up":                          {"workspace"},
+	"workspace.switch_workspace":                 {"workspace"},
 	"workspace.update_stale":                     {"workspace"},
 }
 

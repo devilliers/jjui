@@ -39,3 +39,4 @@ result-*
 # direnv
 .direnv
 .trees/
+jjui-ws

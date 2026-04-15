@@ -2,6 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -183,6 +186,11 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return exec_process.ExecLine(m.context, msg)
 	case common.ExecProcessCompletedMsg:
 		cmds = append(cmds, common.Refresh)
+		if m.workspace != nil {
+			cmds = append(cmds, m.workspace.Init())
+		}
+	case workspace.SwitchWorkspaceMsg:
+		return m.switchToWorkspace(msg.WorkspaceRoot)
 	case common.UpdateRevisionsSuccessMsg:
 		m.state = common.Ready
 	case triggerAutoRefreshMsg:
@@ -679,6 +687,15 @@ func luaCmd(script string) tea.Cmd {
 	}
 }
 
+func (m *Model) switchToWorkspace(workspaceRoot string) tea.Cmd {
+	m.workspace = nil
+	p := &workspaceSwitchProcess{location: workspaceRoot}
+	return tea.Exec(p, func(err error) tea.Msg {
+		// After the child jjui exits, quit this instance
+		return tea.QuitMsg{}
+	})
+}
+
 func (m *Model) stackedScope() (keybindings.ScopeName, bool) {
 	if m.stacked == nil {
 		return "", false
@@ -701,6 +718,30 @@ func (m *Model) updateBlockingScope(scope dispatch.Scope, msg tea.KeyMsg) tea.Cm
 }
 
 var _ tea.Model = (*wrapper)(nil)
+
+// workspaceSwitchProcess re-execs jjui pointed at a different workspace directory.
+type workspaceSwitchProcess struct {
+	location string
+	stdin    io.Reader
+	stdout   io.Writer
+	stderr   io.Writer
+}
+
+func (p *workspaceSwitchProcess) Run() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, p.location)
+	cmd.Stdin = p.stdin
+	cmd.Stdout = p.stdout
+	cmd.Stderr = p.stderr
+	return cmd.Run()
+}
+
+func (p *workspaceSwitchProcess) SetStdin(r io.Reader)  { p.stdin = r }
+func (p *workspaceSwitchProcess) SetStdout(w io.Writer) { p.stdout = w }
+func (p *workspaceSwitchProcess) SetStderr(w io.Writer) { p.stderr = w }
 
 type (
 	frameTickMsg struct{}
