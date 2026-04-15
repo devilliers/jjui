@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -185,13 +186,15 @@ func (m *Model) add() tea.Cmd {
 	return func() tea.Msg {
 		return common.ShowInputMsg{
 			Title:  "Add Workspace",
-			Prompt: "Path: ",
+			Prompt: "Name: ",
 		}
 	}
 }
 
-func (m *Model) runAdd(path string) tea.Cmd {
-	return m.context.RunCommand(jj.WorkspaceAdd(path, ""), func() tea.Msg {
+func (m *Model) runAdd(name string) tea.Cmd {
+	treesDir := filepath.Join(m.context.Location, ".trees")
+	dest := filepath.Join(treesDir, name)
+	return m.context.RunCommand(jj.WorkspaceAdd(dest, name), func() tea.Msg {
 		return common.CommandCompletedMsg{}
 	})
 }
