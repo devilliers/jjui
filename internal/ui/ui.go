@@ -600,6 +600,12 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	case intents.WorkspaceOpen:
 		m.workspace = workspace.New(m.context)
 		return m.workspace.Init(), true
+	case intents.WorkspaceClose:
+		if m.status.StatusExpanded() {
+			m.status.SetStatusExpanded(false)
+			return nil, true
+		}
+		return common.Close, true
 	case intents.Undo:
 		model := undo.NewModel(m.context)
 		m.stacked = model
