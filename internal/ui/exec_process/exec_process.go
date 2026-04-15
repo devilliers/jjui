@@ -15,6 +15,13 @@ import (
 	"github.com/idursun/jjui/internal/ui/context"
 )
 
+var jjBin = func() string {
+	if path, err := exec.LookPath("jj"); err == nil {
+		return path
+	}
+	return "jj"
+}()
+
 func ExecMsgFromLine(prompt string, line string) common.ExecMsg {
 	line = strings.TrimSpace(line)
 	switch prompt {
@@ -37,7 +44,7 @@ func ExecLine(ctx *context.MainContext, msg common.ExecMsg) tea.Cmd {
 	case common.ExecJJ:
 		args := strings.Fields(msg.Line)
 		args = jj.TemplatedArgs(args, replacements)
-		return execProgram("jj", args, ctx.Location, nil, msg)
+		return execProgram(jjBin, args, ctx.Location, nil, msg)
 	case common.ExecShell:
 		// user input is run via `$SHELL -c` to support user specifying command lines
 		// that have pipes (eg, to a pager) or redirection.

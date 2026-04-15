@@ -230,22 +230,32 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 
 	// Use preloaded root if available.
 	for _, r := range m.rows {
-		if r.Name == name && r.Root != "" {
-			root := r.Root
-			return func() tea.Msg {
-				return SwitchWorkspaceMsg{WorkspaceRoot: root}
+		if r.Name == name {
+			if r.Root != "" {
+				root := r.Root
+				return func() tea.Msg {
+					return SwitchWorkspaceMsg{WorkspaceRoot: root}
+				}
 			}
+			// Root was not preloaded — resolve now.
+			break
 		}
 	}
 
-	// Fallback: resolve at switch time via jj workspace root.
+	// Fallback: resolve at switch time via jj workspace root --name.
 	return func() tea.Msg {
+		if name == "" {
+			return intents.AddMessage{
+				Text: "Cannot switch: workspace name is empty",
+				Err:  fmt.Errorf("empty workspace name"),
+			}
+		}
 		output, err := m.context.RunCommandImmediate(
 			[]string{"workspace", "root", "--name", name},
 		)
 		if err != nil {
 			return intents.AddMessage{
-				Text: fmt.Sprintf("Failed to get workspace root: %v", err),
+				Text: fmt.Sprintf("Failed to get workspace root for %q: %v", name, err),
 				Err:  err,
 			}
 		}
@@ -321,9 +331,14 @@ func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {
 
 func (m *Model) load() tea.Cmd {
 	return func() tea.Msg {
-		// Fetch roots (name → path mapping) first
-		rootOutput, _ := m.context.RunCommandImmediate(jj.WorkspaceListRoots())
-		roots := parseRoots(rootOutput)
+		// Fetch roots (name → path mapping)
+		rootOutput, rootErr := m.context.RunCommandImmediate(jj.WorkspaceListRoots())
+		var roots map[string]string
+		if rootErr == nil {
+			roots = parseRoots(rootOutput)
+		} else {
+			roots = make(map[string]string)
+		}
 
 		// Fetch colored display output
 		output, err := m.context.RunCommandImmediate(jj.WorkspaceList())

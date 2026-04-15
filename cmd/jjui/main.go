@@ -68,7 +68,11 @@ func init() {
 }
 
 func getJJRootDir(location string) (string, error) {
-	cmd := exec.Command("jj", "root", "--color=always")
+	jjBin, err := exec.LookPath("jj")
+	if err != nil {
+		jjBin = "jj"
+	}
+	cmd := exec.Command(jjBin, "root", "--color=always")
 	cmd.Dir = location
 
 	output, err := cmd.Output()
