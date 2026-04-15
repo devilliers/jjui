@@ -47,6 +47,7 @@ bindings = [
     { key = "b", action = "ui.open_bookmarks", scope = "revisions", desc = "bookmarks" },
     { key = "g", action = "ui.open_git", scope = "revisions", desc = "git" },
     { key = "o", action = "ui.open_oplog", scope = "revisions", desc = "oplog" },
+    { key = "w", action = "ui.open_workspace", scope = "revisions", desc = "workspace" },
     { key = "shift+s", action = "revisions.open_squash", scope = "revisions", desc = "squash" },
     { key = "shift+m", action = "revisions.open_set_parents", scope = "revisions", desc = "set parents" },
     { key = "shift+r", action = "revisions.open_revert", scope = "revisions", desc = "revert" },
@@ -343,6 +344,16 @@ bindings = [
     { key = "'", action = "oplog.quick_search.next", scope = "oplog.quick_search", desc = "next" },
     { key = "\"", action = "oplog.quick_search.prev", scope = "oplog.quick_search", desc = "prev" },
     { key = "esc", action = "oplog.quick_search.clear", scope = "oplog.quick_search", desc = "clear" },
+
+    # workspace
+    { key = ["up", "k"], action = "workspace.move_up", scope = "workspace", desc = "up" },
+    { key = ["down", "j"], action = "workspace.move_down", scope = "workspace", desc = "down" },
+    { key = "pgup", action = "workspace.page_up", scope = "workspace", desc = "pgup" },
+    { key = "pgdown", action = "workspace.page_down", scope = "workspace", desc = "pgdown" },
+    { key = "esc", action = "workspace.close", scope = "workspace", desc = "close" },
+    { key = "a", action = "workspace.add", scope = "workspace", desc = "add workspace" },
+    { key = "shift+f", action = "workspace.forget", scope = "workspace", desc = "forget workspace" },
+    { key = "shift+u", action = "workspace.update_stale", scope = "workspace", desc = "update stale" },
 
     # undo
     { key = "h", action = "undo.prev", scope = "undo", desc = "prev" },
