@@ -38,11 +38,13 @@ import (
 	"github.com/idursun/jjui/internal/ui/revset"
 	"github.com/idursun/jjui/internal/ui/status"
 	"github.com/idursun/jjui/internal/ui/undo"
+	"github.com/idursun/jjui/internal/ui/workspace"
 )
 
 type Model struct {
 	revisions        *revisions.Model
 	oplog            *oplog.Model
+	workspace        *workspace.Model
 	revsetModel      *revset.Model
 	previewModel     *preview.Model
 	diff             *diff.Model
@@ -85,6 +87,10 @@ func (m *Model) closeTopScope(msg common.CloseViewMsg) (tea.Cmd, bool) {
 	}
 	if m.oplog != nil {
 		m.oplog = nil
+		return common.SelectionChanged(m.context.SelectedItem), true
+	}
+	if m.workspace != nil {
+		m.workspace = nil
 		return common.SelectionChanged(m.context.SelectedItem), true
 	}
 	return nil, false
@@ -276,6 +282,8 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	if common.IsInputMessage(msg) {
 		if m.oplog != nil {
 			cmds = append(cmds, m.oplog.Update(msg))
+		} else if m.workspace != nil {
+			cmds = append(cmds, m.workspace.Update(msg))
 		} else {
 			cmds = append(cmds, m.revisions.Update(msg))
 		}
@@ -304,6 +312,8 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 
 	if m.oplog != nil {
 		cmds = append(cmds, m.oplog.Update(msg))
+	} else if m.workspace != nil {
+		cmds = append(cmds, m.workspace.Update(msg))
 	} else {
 		cmds = append(cmds, m.revisions.Update(msg))
 	}
@@ -341,6 +351,8 @@ func (m *Model) statusMode() string {
 		return "diff"
 	case m.oplog != nil:
 		return "oplog"
+	case m.workspace != nil:
+		return "workspace"
 	case m.revsetModel.Editing:
 		return "revset"
 	default:
@@ -376,6 +388,8 @@ func (m *Model) View() string {
 		m.syncPreviewSplitOrientation()
 		if m.oplog != nil {
 			m.renderOpLogLayout(box)
+		} else if m.workspace != nil {
+			m.renderWorkspaceLayout(box)
 		} else {
 			m.renderRevisionsLayout(box)
 		}
@@ -408,6 +422,12 @@ func (m *Model) renderDiffLayout(box layout.Box) {
 func (m *Model) renderOpLogLayout(box layout.Box) {
 	m.renderWithStatus(box, func(content layout.Box) {
 		m.renderSplit(m.oplog, content)
+	})
+}
+
+func (m *Model) renderWorkspaceLayout(box layout.Box) {
+	m.renderWithStatus(box, func(content layout.Box) {
+		m.renderSplit(m.workspace, content)
 	})
 }
 
@@ -483,6 +503,8 @@ func (m *Model) dispatchScopes() []dispatch.Scope {
 		scopes = append(scopes, m.stacked.Scopes()...)
 	} else if m.oplog != nil {
 		scopes = append(scopes, m.oplog.Scopes()...)
+	} else if m.workspace != nil {
+		scopes = append(scopes, m.workspace.Scopes()...)
 	} else {
 		scopes = append(scopes, m.revisions.Scopes()...)
 	}
@@ -509,7 +531,7 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 
 	// --- Cancel fallback (only reached if no inner scope handled it) ---
 	case intents.Cancel:
-		if m.stacked != nil || m.diff != nil || m.oplog != nil {
+		if m.stacked != nil || m.diff != nil || m.oplog != nil || m.workspace != nil {
 			return common.Close, true
 		}
 		if m.flash.Any() {
@@ -539,6 +561,9 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 	case intents.OpLogOpen:
 		m.oplog = oplog.New(m.context)
 		return m.oplog.Init(), true
+	case intents.WorkspaceOpen:
+		m.workspace = workspace.New(m.context)
+		return m.workspace.Init(), true
 	case intents.Undo:
 		model := undo.NewModel(m.context)
 		m.stacked = model

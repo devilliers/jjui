@@ -252,6 +252,7 @@ var builtInActionScopes = map[string][]string{
 	"ui.open_redo":                               {"ui"},
 	"ui.open_revset":                             {"ui"},
 	"ui.open_undo":                               {"ui"},
+	"ui.open_workspace":                          {"ui"},
 	"ui.preview.show":                            {"ui.preview"},
 	"ui.preview_expand":                          {"ui"},
 	"ui.preview_half_page_down":                  {"ui"},
@@ -268,6 +269,14 @@ var builtInActionScopes = map[string][]string{
 	"undo.cancel":                                {"undo"},
 	"undo.next":                                  {"undo"},
 	"undo.prev":                                  {"undo"},
+	"workspace.add":                              {"workspace"},
+	"workspace.close":                            {"workspace"},
+	"workspace.forget":                           {"workspace"},
+	"workspace.move_down":                        {"workspace"},
+	"workspace.move_up":                          {"workspace"},
+	"workspace.page_down":                        {"workspace"},
+	"workspace.page_up":                          {"workspace"},
+	"workspace.update_stale":                     {"workspace"},
 }
 
 var builtInActionArgSchemas = map[string]map[string]string{

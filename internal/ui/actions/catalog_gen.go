@@ -41,6 +41,7 @@ const (
 	ScopeUi                  = "ui"
 	ScopeUiPreview           = "ui.preview"
 	ScopeUndo                = "undo"
+	ScopeWorkspace           = "workspace"
 )
 
 func ResolveIntent(scope string, action keybindings.Action, args map[string]any) (intents.Intent, bool) {
@@ -625,6 +626,8 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.Edit{Clear: true}, true
 		case keybindings.Action("ui.open_undo"):
 			return intents.Undo{}, true
+		case keybindings.Action("ui.open_workspace"):
+			return intents.WorkspaceOpen{}, true
 		case keybindings.Action("ui.preview_expand"):
 			return intents.PreviewExpand{}, true
 		case keybindings.Action("ui.preview_half_page_down"):
@@ -663,6 +666,25 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.OptionSelect{Delta: 1}, true
 		case keybindings.Action("undo.prev"):
 			return intents.OptionSelect{Delta: -1}, true
+		}
+	case ScopeWorkspace:
+		switch action {
+		case keybindings.Action("workspace.add"):
+			return intents.WorkspaceAdd{}, true
+		case keybindings.Action("workspace.close"):
+			return intents.WorkspaceClose{}, true
+		case keybindings.Action("workspace.forget"):
+			return intents.WorkspaceForget{}, true
+		case keybindings.Action("workspace.move_down"):
+			return intents.WorkspaceNavigate{Delta: 1}, true
+		case keybindings.Action("workspace.move_up"):
+			return intents.WorkspaceNavigate{Delta: -1}, true
+		case keybindings.Action("workspace.page_down"):
+			return intents.WorkspaceNavigate{Delta: 1, IsPage: true}, true
+		case keybindings.Action("workspace.page_up"):
+			return intents.WorkspaceNavigate{Delta: -1, IsPage: true}, true
+		case keybindings.Action("workspace.update_stale"):
+			return intents.WorkspaceUpdateStale{}, true
 		}
 	}
 	return nil, false

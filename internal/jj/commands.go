@@ -455,6 +455,27 @@ func RevsetValidate(revset string) CommandArgs {
 	return []string{"log", "-r", revset, "-n", "1", "--ignore-working-copy"}
 }
 
+func WorkspaceList() CommandArgs {
+	return []string{"workspace", "list", "--color", "always"}
+}
+
+func WorkspaceAdd(destination string, name string) CommandArgs {
+	args := []string{"workspace", "add"}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
+	args = append(args, destination)
+	return args
+}
+
+func WorkspaceForget(name string) CommandArgs {
+	return []string{"workspace", "forget", name}
+}
+
+func WorkspaceUpdateStale() CommandArgs {
+	return []string{"workspace", "update-stale"}
+}
+
 func EscapeFileName(fileName string) string {
 	// Escape backslashes and quotes in the file name for shell compatibility
 	if strings.Contains(fileName, "\\") {
