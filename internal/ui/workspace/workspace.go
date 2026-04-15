@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -226,7 +227,7 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 		name = m.rows[m.cursor].Name
 	}
 
-	// Find the root path from the already-loaded workspace data.
+	// Use preloaded root if available.
 	for _, r := range m.rows {
 		if r.Name == name && r.Root != "" {
 			root := r.Root
@@ -236,11 +237,25 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 		}
 	}
 
+	// Fallback: resolve at switch time via jj workspace root.
 	return func() tea.Msg {
-		return intents.AddMessage{
-			Text: fmt.Sprintf("Could not find root for workspace %q", name),
-			Err:  fmt.Errorf("workspace root not found"),
+		output, err := m.context.RunCommandImmediate(
+			[]string{"workspace", "root", "--name", name},
+		)
+		if err != nil {
+			return intents.AddMessage{
+				Text: fmt.Sprintf("Failed to get workspace root: %v", err),
+				Err:  err,
+			}
 		}
+		root := strings.TrimSpace(string(output))
+		if root == "" {
+			return intents.AddMessage{
+				Text: fmt.Sprintf("Workspace root is empty for %q", name),
+				Err:  fmt.Errorf("empty workspace root"),
+			}
+		}
+		return SwitchWorkspaceMsg{WorkspaceRoot: root}
 	}
 }
 
