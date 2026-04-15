@@ -457,6 +457,7 @@ function wait_refresh() end
 ---@field open_redo fun()
 ---@field open_revset fun()
 ---@field open_undo fun()
+---@field open_workspace fun()
 ---@field preview_expand fun()
 ---@field preview_half_page_down fun()
 ---@field preview_half_page_up fun()
@@ -480,6 +481,17 @@ function wait_refresh() end
 ---@field prev fun()
 ---@field close fun()
 
+---@class jjui.workspace
+---@field add fun()
+---@field close fun()
+---@field forget fun()
+---@field move_down fun()
+---@field move_up fun()
+---@field page_down fun()
+---@field page_up fun()
+---@field switch_workspace fun()
+---@field update_stale fun()
+
 ---@class jjui
 ---@field revisions jjui.revisions
 ---@field revset jjui.revset
@@ -498,6 +510,7 @@ function wait_refresh() end
 ---@field status jjui.status
 ---@field ui jjui.ui
 ---@field undo jjui.undo
+---@field workspace jjui.workspace
 ---@field builtin jjui.builtin
 ---@field jj_async fun(...: string|string[])
 ---@field jj_interactive fun(...: string|string[])
@@ -529,6 +542,7 @@ function wait_refresh() end
 ---@field status jjui.status
 ---@field ui jjui.ui
 ---@field undo jjui.undo
+---@field workspace jjui.workspace
 
 ---@type jjui
 jjui = {}

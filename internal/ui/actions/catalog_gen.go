@@ -733,6 +733,8 @@ func ResolveIntent(scope string, action keybindings.Action, args map[string]any)
 			return intents.WorkspaceNavigate{Delta: 1, IsPage: true}, true
 		case keybindings.Action("workspace.page_up"):
 			return intents.WorkspaceNavigate{Delta: -1, IsPage: true}, true
+		case keybindings.Action("workspace.switch_workspace"):
+			return intents.WorkspaceSwitch{}, true
 		case keybindings.Action("workspace.update_stale"):
 			return intents.WorkspaceUpdateStale{}, true
 		}

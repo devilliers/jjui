@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -9,6 +11,7 @@ import (
 	"github.com/idursun/jjui/internal/ui/actions"
 	"github.com/idursun/jjui/internal/ui/common"
 	"github.com/idursun/jjui/internal/ui/context"
+	"github.com/idursun/jjui/internal/ui/input"
 	"github.com/idursun/jjui/internal/ui/intents"
 	"github.com/idursun/jjui/internal/ui/layout"
 	"github.com/idursun/jjui/internal/ui/render"
@@ -31,6 +34,12 @@ func (o WorkspaceScrollMsg) SetDelta(delta int, horizontal bool) tea.Msg {
 	return WorkspaceScrollMsg{Delta: delta, Horizontal: horizontal}
 }
 
+// SwitchWorkspaceMsg is emitted when the user wants to switch to a different workspace.
+// The root UI handles this by re-exec'ing jjui pointed at the workspace root.
+type SwitchWorkspaceMsg struct {
+	WorkspaceRoot string
+}
+
 var _ common.ImmediateModel = (*Model)(nil)
 
 type Model struct {
@@ -41,6 +50,7 @@ type Model struct {
 	textStyle        lipgloss.Style
 	selectedStyle    lipgloss.Style
 	ensureCursorView bool
+	pendingAdd       bool
 }
 
 func (m *Model) Len() int {
@@ -91,6 +101,19 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case updateWorkspaceMsg:
 		m.rows = msg.Rows
 		return nil
+	case input.SelectedMsg:
+		if m.pendingAdd {
+			m.pendingAdd = false
+			path := strings.TrimSpace(msg.Value)
+			if path == "" {
+				return nil
+			}
+			return m.runAdd(path)
+		}
+	case input.CancelledMsg:
+		m.pendingAdd = false
+	case common.CommandCompletedMsg:
+		return m.load()
 	case WorkspaceClickedMsg:
 		if msg.Index >= 0 && msg.Index < len(m.rows) {
 			m.cursor = msg.Index
@@ -118,6 +141,8 @@ func (m *Model) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
 		return m.forget(intent), true
 	case intents.WorkspaceUpdateStale:
 		return m.updateStale(), true
+	case intents.WorkspaceSwitch:
+		return m.switchWorkspace(intent), true
 	}
 	return nil, false
 }
@@ -156,10 +181,20 @@ func (m *Model) close() tea.Cmd {
 }
 
 func (m *Model) add() tea.Cmd {
+	m.pendingAdd = true
 	return func() tea.Msg {
 		return common.ShowInputMsg{
-			Title:  "Workspace Path",
-			Prompt: "Enter path for the new workspace: ",
+			Title:  "Add Workspace",
+			Prompt: "Path: ",
+		}
+	}
+}
+
+func (m *Model) runAdd(path string) tea.Cmd {
+	return func() tea.Msg {
+		return common.ExecMsg{
+			Line: fmt.Sprintf("workspace add %s", path),
+			Mode: common.ExecJJ,
 		}
 	}
 }
@@ -175,15 +210,40 @@ func (m *Model) forget(intent intents.WorkspaceForget) tea.Cmd {
 	if name == "" {
 		return nil
 	}
-	return tea.Batch(m.context.RunCommand(jj.WorkspaceForget(name), func() tea.Msg {
+	return m.context.RunCommand(jj.WorkspaceForget(name), func() tea.Msg {
 		return common.CommandCompletedMsg{}
-	}), m.load())
+	})
 }
 
 func (m *Model) updateStale() tea.Cmd {
 	return m.context.RunCommand(jj.WorkspaceUpdateStale(), func() tea.Msg {
 		return common.CommandCompletedMsg{}
 	})
+}
+
+func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
+	name := intent.WorkspaceName
+	if name == "" {
+		if len(m.rows) == 0 {
+			return nil
+		}
+		name = m.rows[m.cursor].Name
+	}
+	if name == "" {
+		return nil
+	}
+
+	return func() tea.Msg {
+		output, err := m.context.RunCommandImmediate(jj.WorkspaceRoot(name))
+		if err != nil {
+			return intents.AddMessage{Text: fmt.Sprintf("Failed to get workspace root: %v", err), Err: err}
+		}
+		root := strings.TrimSpace(string(output))
+		if root == "" {
+			return intents.AddMessage{Text: "Workspace root is empty", Err: fmt.Errorf("empty workspace root")}
+		}
+		return SwitchWorkspaceMsg{WorkspaceRoot: root}
+	}
 }
 
 func (m *Model) ViewRect(dl *render.DisplayContext, box layout.Box) {

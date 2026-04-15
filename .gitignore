@@ -40,3 +40,4 @@ result-*
 .direnv
 .cache/
 .trees/
+jjui-ws
