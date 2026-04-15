@@ -6,6 +6,7 @@ import (
 
 type row struct {
 	Name  string
+	Root  string
 	Lines []*rowLine
 }
 

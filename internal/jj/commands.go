@@ -459,6 +459,10 @@ func WorkspaceList() CommandArgs {
 	return []string{"workspace", "list", "--color", "always"}
 }
 
+func WorkspaceListRoots() CommandArgs {
+	return []string{"workspace", "list", "--color", "never", "-T", `name ++ "\t" ++ root ++ "\n"`}
+}
+
 func WorkspaceAdd(destination string, name string) CommandArgs {
 	args := []string{"workspace", "add"}
 	if name != "" {
@@ -474,14 +478,6 @@ func WorkspaceForget(name string) CommandArgs {
 
 func WorkspaceUpdateStale() CommandArgs {
 	return []string{"workspace", "update-stale"}
-}
-
-func WorkspaceRoot(name string) CommandArgs {
-	args := []string{"workspace", "root"}
-	if name != "" {
-		args = append(args, "--name", name)
-	}
-	return args
 }
 
 func EscapeFileName(fileName string) string {

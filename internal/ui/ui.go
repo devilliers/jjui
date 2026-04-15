@@ -186,9 +186,6 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return exec_process.ExecLine(m.context, msg)
 	case common.ExecProcessCompletedMsg:
 		cmds = append(cmds, common.Refresh)
-		if m.workspace != nil {
-			cmds = append(cmds, m.workspace.Init())
-		}
 	case workspace.SwitchWorkspaceMsg:
 		return m.switchToWorkspace(msg.WorkspaceRoot)
 	case common.UpdateRevisionsSuccessMsg:

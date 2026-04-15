@@ -1,0 +1,225 @@
+package revert
+
+import (
+	"slices"
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/ui/actions"
+	"github.com/idursun/jjui/internal/ui/common"
+	"github.com/idursun/jjui/internal/ui/context"
+	"github.com/idursun/jjui/internal/ui/dispatch"
+	"github.com/idursun/jjui/internal/ui/intents"
+	"github.com/idursun/jjui/internal/ui/layout"
+	"github.com/idursun/jjui/internal/ui/operations"
+	"github.com/idursun/jjui/internal/ui/operations/target_picker"
+	"github.com/idursun/jjui/internal/ui/render"
+)
+
+var (
+	targetToFlags = map[intents.ModeTarget]string{
+		intents.ModeTargetAfter:       "--insert-after",
+		intents.ModeTargetBefore:      "--insert-before",
+		intents.ModeTargetDestination: "--onto",
+	}
+)
+
+type styles struct {
+	shortcut     lipgloss.Style
+	dimmed       lipgloss.Style
+	sourceMarker lipgloss.Style
+	targetMarker lipgloss.Style
+	changeId     lipgloss.Style
+	text         lipgloss.Style
+}
+
+var _ operations.Operation = (*Operation)(nil)
+var _ common.Focusable = (*Operation)(nil)
+var _ dispatch.ScopeProvider = (*Operation)(nil)
+
+type Operation struct {
+	context        *context.MainContext
+	From           jj.SelectedRevisions
+	InsertStart    *jj.Commit
+	To             *jj.Commit
+	Target         intents.ModeTarget
+	targetName     string
+	highlightedIds []string
+	styles         styles
+}
+
+func (r *Operation) IsFocused() bool {
+	return true
+}
+
+func (r *Operation) Scopes() []dispatch.Scope {
+	return []dispatch.Scope{
+		{
+			Name:    actions.ScopeRevert,
+			Leak:    dispatch.LeakAll,
+			Handler: r,
+		},
+	}
+}
+
+func (r *Operation) Init() tea.Cmd {
+	return nil
+}
+
+func (r *Operation) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case target_picker.TargetSelectedMsg:
+		r.targetName = strings.TrimSpace(msg.Target)
+		cmd, _ := r.HandleIntent(intents.Apply{Force: msg.Force})
+		return cmd
+	case intents.Intent:
+		cmd, _ := r.HandleIntent(msg)
+		return cmd
+	}
+	return nil
+}
+
+func (r *Operation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
+	switch intent := intent.(type) {
+	case intents.StartAceJump:
+		return common.StartAceJump(), true
+	case intents.RevertSetTarget:
+		r.Target = intent.Target
+		if r.Target == intents.ModeTargetInsert {
+			r.InsertStart = r.To
+		}
+		return nil, true
+	case intents.RevertOpenTargetPicker:
+		return common.OpenTargetPicker(), true
+	case intents.Apply:
+		if r.Target == intents.ModeTargetInsert {
+			insertAfter := r.InsertStart.GetChangeId()
+			insertBefore := r.targetArg()
+			return r.context.RunCommand(jj.RevertInsert(r.From, insertAfter, insertBefore), common.RefreshAndSelect(r.From.Last()), common.CloseApplied), true
+		}
+		source := "--revisions"
+		target := targetToFlags[r.Target]
+		return r.context.RunCommand(jj.Revert(r.From, r.targetArg(), source, target), common.RefreshAndSelect(r.From.Last()), common.CloseApplied), true
+	case intents.Cancel:
+		return common.Close, true
+	}
+	return nil, false
+}
+
+func (r *Operation) SetSelectedRevision(commit *jj.Commit) tea.Cmd {
+	r.highlightedIds = nil
+	r.To = commit
+	r.highlightedIds = r.From.GetIds()
+	return nil
+}
+
+func (r *Operation) Render(commit *jj.Commit, pos operations.RenderPosition) string {
+	if pos == operations.RenderBeforeChangeId {
+		changeId := commit.GetChangeId()
+		if slices.Contains(r.highlightedIds, changeId) {
+			return r.styles.sourceMarker.Render("<< revert >>")
+		}
+		if r.Target == intents.ModeTargetInsert && r.InsertStart.GetChangeId() == commit.GetChangeId() {
+			return r.styles.sourceMarker.Render("<< after this >>")
+		}
+		if r.Target == intents.ModeTargetInsert && r.To.GetChangeId() == commit.GetChangeId() {
+			return r.styles.sourceMarker.Render("<< before this >>")
+		}
+		return ""
+	}
+	expectedPos := operations.RenderPositionBefore
+	if r.Target == intents.ModeTargetBefore || r.Target == intents.ModeTargetInsert {
+		expectedPos = operations.RenderPositionAfter
+	}
+
+	if pos != expectedPos {
+		return ""
+	}
+
+	isSelected := r.To != nil && r.To.GetChangeId() == commit.GetChangeId()
+	if !isSelected {
+		return ""
+	}
+
+	var source string
+	isMany := len(r.From.Revisions) > 0
+	switch {
+	case isMany:
+		source = "revisions "
+	default:
+		source = "revision "
+	}
+	var ret string
+	if r.Target == intents.ModeTargetDestination {
+		ret = "onto"
+	}
+	if r.Target == intents.ModeTargetAfter {
+		ret = "after"
+	}
+	if r.Target == intents.ModeTargetBefore {
+		ret = "before"
+	}
+	if r.Target == intents.ModeTargetInsert {
+		ret = "insert"
+	}
+
+	if r.Target == intents.ModeTargetInsert {
+		return lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			r.styles.targetMarker.Render("<< insert >>"),
+			" ",
+			r.styles.dimmed.Render(source),
+			r.styles.changeId.Render(strings.Join(r.From.GetIds(), " ")),
+			r.styles.dimmed.Render(" between "),
+			r.styles.changeId.Render(r.InsertStart.GetChangeId()),
+			r.styles.dimmed.Render(" and "),
+			r.styles.changeId.Render(r.To.GetChangeId()),
+		)
+	}
+
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		r.styles.targetMarker.Render("<< "+ret+" >>"),
+		r.styles.dimmed.Render(" revert "),
+		r.styles.dimmed.Render(source),
+		r.styles.changeId.Render(strings.Join(r.From.GetIds(), " ")),
+		r.styles.dimmed.Render(" "),
+		r.styles.dimmed.Render(ret),
+		r.styles.dimmed.Render(" "),
+		r.styles.changeId.Render(r.To.GetChangeId()),
+	)
+}
+
+func (r *Operation) Name() string {
+	return "revert"
+}
+
+func (r *Operation) ViewRect(_ *render.DisplayContext, _ layout.Box) {}
+
+func (r *Operation) targetArg() string {
+	if strings.TrimSpace(r.targetName) != "" {
+		return r.targetName
+	}
+	if r.To != nil {
+		return r.To.GetChangeId()
+	}
+	return ""
+}
+
+func NewOperation(context *context.MainContext, from jj.SelectedRevisions, target intents.ModeTarget) *Operation {
+	styles := styles{
+		changeId:     common.DefaultPalette.Get("revert change_id"),
+		shortcut:     common.DefaultPalette.Get("revert shortcut"),
+		dimmed:       common.DefaultPalette.Get("revert dimmed"),
+		sourceMarker: common.DefaultPalette.Get("revert source_marker"),
+		targetMarker: common.DefaultPalette.Get("revert target_marker"),
+	}
+	return &Operation{
+		context: context,
+		From:    from,
+		Target:  target,
+		styles:  styles,
+	}
+}
