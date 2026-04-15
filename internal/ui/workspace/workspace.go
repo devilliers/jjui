@@ -52,6 +52,7 @@ type Model struct {
 	selectedStyle    lipgloss.Style
 	ensureCursorView bool
 	pendingAdd       bool
+	pendingSwitch    string // workspace name waiting for a path to be entered
 }
 
 func (m *Model) Len() int {
@@ -111,8 +112,17 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			}
 			return m.runAdd(path)
 		}
+		if m.pendingSwitch != "" {
+			m.pendingSwitch = ""
+			root := strings.TrimSpace(msg.Value)
+			if root == "" {
+				return nil
+			}
+			return func() tea.Msg { return SwitchWorkspaceMsg{WorkspaceRoot: root} }
+		}
 	case input.CancelledMsg:
 		m.pendingAdd = false
+		m.pendingSwitch = ""
 	case common.CommandCompletedMsg:
 		return m.load()
 	case WorkspaceClickedMsg:
@@ -236,10 +246,13 @@ func (m *Model) switchWorkspace(intent intents.WorkspaceSwitch) tea.Cmd {
 	for _, r := range m.rows {
 		if r.Name == name {
 			if r.Root == "" {
+				// jj doesn't have a recorded path for this workspace (common
+				// for the original/default workspace). Prompt the user.
+				m.pendingSwitch = name
 				return func() tea.Msg {
-					return intents.AddMessage{
-						Text: fmt.Sprintf("Workspace %q has no recorded path — try 'jj workspace update-stale'", name),
-						Err:  fmt.Errorf("no recorded path"),
+					return common.ShowInputMsg{
+						Title:  fmt.Sprintf("Switch to workspace %q", name),
+						Prompt: "Path: ",
 					}
 				}
 			}
