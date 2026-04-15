@@ -18,6 +18,15 @@ import (
 	"github.com/idursun/jjui/internal/ui/common"
 )
 
+// jjBin is the resolved absolute path to the jj binary, found once at startup.
+// Storing it avoids picking up a different jj from a modified PATH later.
+var jjBin = func() string {
+	if path, err := exec.LookPath("jj"); err == nil {
+		return path
+	}
+	return "jj"
+}()
+
 type CommandRunner interface {
 	RunCommandImmediate(args []string) ([]byte, error)
 	RunCommandImmediateWithEnv(args []string, env []string) ([]byte, error)
@@ -36,7 +45,7 @@ type MainCommandRunner struct {
 func (a *MainCommandRunner) nextID() int { return int(a.idCounter.Add(1)) }
 
 func (a *MainCommandRunner) RunCommandImmediateWithEnv(args []string, env []string) ([]byte, error) {
-	c := exec.Command("jj", args...)
+	c := exec.Command(jjBin, args...)
 	c.Dir = a.Location
 	if len(env) > 0 {
 		c.Env = append(os.Environ(), env...)
@@ -89,7 +98,7 @@ func (a *MainCommandRunner) runCommandWithInput(args []string, input *string, co
 			if !slices.Contains(args, "--color") {
 				args = append([]string{"--color", "always"}, args...)
 			}
-			c := exec.Command("jj", args...)
+			c := exec.Command(jjBin, args...)
 			c.Dir = a.Location
 			c.Env = append(os.Environ(), env...)
 
@@ -148,7 +157,7 @@ func (a *MainCommandRunner) RunCommand(args []string, continuations ...tea.Cmd) 
 }
 
 func (a *MainCommandRunner) RunInteractiveCommand(args []string, continuation tea.Cmd) tea.Cmd {
-	c := exec.Command("jj", args...)
+	c := exec.Command(jjBin, args...)
 	errBuffer := &bytes.Buffer{}
 	c.Stderr = errBuffer
 	c.Dir = a.Location
