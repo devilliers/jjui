@@ -1,0 +1,490 @@
+
+.editorconfig
+œŠ¿’Ù3§
+.envrc	œŠ¿’Ù3
+ 
+.github/CODEOWNERS
+œŠ¿’Ù3¤2
+$.github/ISSUE_TEMPLATE/bug_report.md
+Š¿’Ù3á7
+).github/ISSUE_TEMPLATE/feature_request.md
+Š¿’Ù3Ù5
+'.github/ISSUE_TEMPLATE/impl_proposal.md
+Š¿’Ù3¾&
+.github/workflows/go.yml
+Š¿’Ù3–'
+.github/workflows/nix.yml
+Š¿’Ù3‡+
+.github/workflows/release.yml
+Š¿’Ù3
+
+.gitignore
+Š¿’Ù3Ë
+	AGENTS.md
+Š¿’Ù3Ğ
+ARCHITECTURE.md
+Š¿’Ù3Î<
+	CLAUDE.md	Š¿’Ù3
+CONTRIBUTING.md
+Š¿’Ù3¨
+LICENSE
+Š¿’Ù3¯
+	README.md
+Š¿’Ù3ë+%
+cmd/genactions/main.goŸŠ¿’Ù3Âï)
+cmd/genactions/main_test.go
+ŸŠ¿’Ù3ú
+cmd/jjui/main.go
+ŸŠ¿’Ù3„D
+default.nix
+ Š¿’Ù3„
+
+flake.lock
+ Š¿’Ù3ù
+	flake.nix
+ Š¿’Ù3Ç
+go.mod
+ Š¿’Ù3
+go.sum
+ Š¿’Ù3Ì5-
+internal/askpass/ppid_darwin.go
+ Š¿’Ù3Ş,
+internal/askpass/ppid_linux.go
+ Š¿’Ù3¬,
+internal/askpass/ppid_other.go
+¡Š¿’Ù3©(
+internal/askpass/server.go
+¡Š¿’Ù3á33
+&internal/askpass/server_helper_test.go	¡Š¿’Ù3-
+internal/askpass/server_test.go
+¡Š¿’Ù3ê&0
+"internal/config/bindings_schema.go
+¡Š¿’Ù3ı5
+'internal/config/bindings_schema_test.go
+¡Š¿’Ù3ó'
+internal/config/config.go
+¢Š¿’Ù3ü0,
+internal/config/config_test.go
+¢Š¿’Ù3ú4
+%internal/config/default/bindings.toml¢Š¿’Ù3ùú1
+#internal/config/default/config.toml
+¢Š¿’Ù3É7
+)internal/config/default/default_dark.toml
+¢Š¿’Ù3ı
+8
+*internal/config/default/default_light.toml
+£Š¿’Ù3
+-
+internal/config/deprecations.go
+£Š¿’Ù3…2
+$internal/config/deprecations_test.go
+£Š¿’Ù3¯(
+internal/config/history.go
+£Š¿’Ù3¥*
+internal/config/jj_config.go
+£Š¿’Ù3¢'
+internal/config/loader.go
+£Š¿’Ù3°/,
+internal/config/loader_test.go
+£Š¿’Ù3î>,
+internal/jj/bookmark_parser.go
+¤Š¿’Ù3Š1
+#internal/jj/bookmark_parser_test.go
+¤Š¿’Ù3’%
+internal/jj/commands.go
+¤Š¿’Ù3àt#
+internal/jj/commit.go
+¤Š¿’Ù3Æ*
+internal/jj/remote_parser.go
+¤Š¿’Ù3ç/
+!internal/jj/remote_parser_test.go
+¤Š¿’Ù3Ã	/
+!internal/jj/selected_revisions.go
+¥Š¿’Ù3”	3
+%internal/jj/source/function_source.go
+¥Š¿’Ù3—32
+$internal/jj/source/history_source.go
+¥Š¿’Ù3Ì*
+internal/jj/source/source.go
+¥Š¿’Ù3œ/
+!internal/jj/source/source_test.go
+¥Š¿’Ù3‰'&
+internal/parser/gutter.go	¥Š¿’Ù3z+
+internal/parser/log_parser.go
+¥Š¿’Ù3$
+internal/parser/row.go
+¦Š¿’Ù3¹!)
+internal/parser/row_line.go
+¦Š¿’Ù3ç5
+'internal/parser/streaming_log_parser.go
+¦Š¿’Ù3º:
+,internal/parser/streaming_log_parser_test.go
+¦Š¿’Ù3´
+,
+internal/screen/ansi_parser.go
+¦Š¿’Ù3™(1
+#internal/screen/ansi_parser_test.go
+¦Š¿’Ù3˜((
+internal/screen/segment.go
+¦Š¿’Ù3¼
+*
+internal/scripting/config.go
+§Š¿’Ù3ÁA/
+!internal/scripting/config_test.go
+§Š¿’Ù3ÖC.
+ internal/scripting/conversion.go
+§Š¿’Ù3‘33
+%internal/scripting/conversion_test.go
+§Š¿’Ù3Å(
+internal/scripting/lua.go§Š¿’Ù3Û,
+internal/scripting/lua_test.go
+§Š¿’Ù3÷T,
+internal/ui/actionargs/bool.go
+¨Š¿’Ù3ö.
+ internal/ui/actionargs/string.go
+¨Š¿’Ù3ş5
+&internal/ui/actionmeta/builtins_gen.go¨Š¿’Ù3¸¦9
++internal/ui/actionmeta/builtins_gen_test.go
+¨Š¿’Ù3â1
+"internal/ui/actions/catalog_gen.go©Š¿’Ù3×ø5
+'internal/ui/actions/catalog_gen_test.go
+©Š¿’Ù3®,
+internal/ui/actions/generate.go	©Š¿’Ù3>6
+(internal/ui/actions/resolve_by_action.go
+©Š¿’Ù3Ä+
+internal/ui/bindings/action.go	©Š¿’Ù3h-
+internal/ui/bindings/binding.go
+ªŠ¿’Ù3Â	+
+internal/ui/bindings/clone.go
+ªŠ¿’Ù3*
+internal/ui/bindings/scope.go	ªŠ¿’Ù3h1
+"internal/ui/bookmarks/bookmarks.goªŠ¿’Ù3¸´5
+'internal/ui/bookmarks/bookmarks_test.go
+ªŠ¿’Ù3¢#*
+internal/ui/choose/choose.go
+«Š¿’Ù3ÄF/
+!internal/ui/choose/choose_test.go
+«Š¿’Ù3ÑA
+3internal/ui/common/autocompletion/autocompletion.go
+«Š¿’Ù33F
+8internal/ui/common/autocompletion/completion_provider.go
+«Š¿’Ù3ì,
+internal/ui/common/debounce.go
+«Š¿’Ù3›-
+internal/ui/common/focusable.go
+«Š¿’Ù3œ)
+internal/ui/common/model.go
+¬Š¿’Ù3›(
+internal/ui/common/msgs.go
+¬Š¿’Ù3¹+
+internal/ui/common/palette.go
+¬Š¿’Ù3æ$0
+"internal/ui/common/palette_test.go
+¬Š¿’Ù3¤9*
+internal/ui/common/search.go
+¬Š¿’Ù3ó/
+!internal/ui/common/search_test.go
+¬Š¿’Ù3À-
+internal/ui/common/selection.go
+¬Š¿’Ù3‰+
+internal/ui/common/stacked.go
+¬Š¿’Ù3á6
+(internal/ui/confirmation/confirmation.go
+­Š¿’Ù3È5;
+-internal/ui/confirmation/confirmation_test.go
+­Š¿’Ù3õ%3
+%internal/ui/context/command_runner.go
+­Š¿’Ù3Ÿ01
+#internal/ui/context/main_context.go
+­Š¿’Ù3Ÿ!&
+internal/ui/diff/diff.go
+­Š¿’Ù3ş5+
+internal/ui/diff/diff_test.go
+®Š¿’Ù3Ş+0
+"internal/ui/dispatch/dispatcher.go
+®Š¿’Ù3¡+5
+'internal/ui/dispatch/dispatcher_test.go
+®Š¿’Ù3–8.
+ internal/ui/dispatch/resolver.go
+®Š¿’Ù3é3
+%internal/ui/dispatch/resolver_test.go
+®Š¿’Ù3–'+
+internal/ui/dispatch/scope.go
+®Š¿’Ù3š6
+(internal/ui/exec_process/exec_process.go
+¯Š¿’Ù3ı$6
+(internal/ui/exec_process/tty_observer.go
+¯Š¿’Ù3Û2
+$internal/ui/flash/command_history.go
+¯Š¿’Ù3ó)7
+)internal/ui/flash/command_history_test.go
+¯Š¿’Ù3‚(
+internal/ui/flash/flash.go
+¯Š¿’Ù3Ï,-
+internal/ui/flash/flash_test.go
+¯Š¿’Ù3ã)
+internal/ui/flash/render.go
+¯Š¿’Ù3ª4
+&internal/ui/fuzzy_files/fuzzy_files.go
+°Š¿’Ù3¡(9
++internal/ui/fuzzy_files/fuzzy_files_test.go
+°Š¿’Ù3€4
+&internal/ui/fuzzy_input/fuzzy_input.go
+°Š¿’Ù3Ş"9
++internal/ui/fuzzy_input/fuzzy_input_test.go
+°Š¿’Ù3İ	6
+(internal/ui/fuzzy_search/fuzzy_search.go
+°Š¿’Ù3¯";
+-internal/ui/fuzzy_search/fuzzy_search_test.go
+°Š¿’Ù3ß%
+internal/ui/git/git.go±Š¿’Ù3’Ÿ)
+internal/ui/git/git_test.go
+±Š¿’Ù3ò$1
+#internal/ui/graph/graph_streamer.go
+±Š¿’Ù3)
+internal/ui/help/builder.go
+±Š¿’Ù3ê&.
+ internal/ui/help/builder_test.go
+±Š¿’Ù3¡&
+internal/ui/help/help.go
+±Š¿’Ù3ƒ[(
+internal/ui/input/input.go
+±Š¿’Ù3Ä-
+internal/ui/input/input_test.go
+²Š¿’Ù39
++internal/ui/intents/autocomplete_intents.go
+²Š¿’Ù3‹4
+&internal/ui/intents/details_intents.go
+²Š¿’Ù3ú1
+#internal/ui/intents/diff_intents.go
+²Š¿’Ù3à
+3
+%internal/ui/intents/evolog_intents.go
+²Š¿’Ù3á2
+$internal/ui/intents/flash_intents.go
+²Š¿’Ù3§+
+internal/ui/intents/intent.go
+²Š¿’Ù3Å1
+#internal/ui/intents/mode_intents.go
+³Š¿’Ù3î2
+$internal/ui/intents/oplog_intents.go
+³Š¿’Ù3‰4
+&internal/ui/intents/preview_intents.go
+³Š¿’Ù3	6
+(internal/ui/intents/revisions_intents.go
+³Š¿’Ù3Í'3
+%internal/ui/intents/revset_intents.go
+³Š¿’Ù3‘3
+%internal/ui/intents/search_intents.go
+³Š¿’Ù3È/
+!internal/ui/intents/ui_intents.go
+³Š¿’Ù3€@6
+(internal/ui/intents/workspace_intents.go
+´Š¿’Ù3Ã'
+internal/ui/layout/box.go
+´Š¿’Ù3‰I,
+internal/ui/layout/box_test.go
+´Š¿’Ù3’T7
+)internal/ui/operations/abandon/abandon.go
+´Š¿’Ù3à-<
+.internal/ui/operations/abandon/abandon_test.go
+´Š¿’Ù3¥9
++internal/ui/operations/ace_jump/ace_jump.go
+µŠ¿’Ù3í:
+,internal/ui/operations/ace_jump/operation.go
+µŠ¿’Ù3ö=
+/internal/ui/operations/bookmark/set_bookmark.go
+µŠ¿’Ù3¹%B
+4internal/ui/operations/bookmark/set_bookmark_test.go
+µŠ¿’Ù3”9
++internal/ui/operations/default_operation.go
+µŠ¿’Ù3ò9
++internal/ui/operations/describe/describe.go
+µŠ¿’Ù3¤(>
+0internal/ui/operations/describe/describe_test.go
+µŠ¿’Ù3å7
+)internal/ui/operations/details/details.go
+¶Š¿’Ù3‘w<
+.internal/ui/operations/details/details_list.go
+¶Š¿’Ù3¿'<
+.internal/ui/operations/details/details_test.go
+¶Š¿’Ù3äD4
+&internal/ui/operations/details/item.go
+¶Š¿’Ù3äE
+7internal/ui/operations/duplicate/duplicate_operation.go
+¶Š¿’Ù3ô,?
+1internal/ui/operations/evolog/evolog_operation.go
+¶Š¿’Ù3JD
+6internal/ui/operations/evolog/evolog_operation_test.go
+¶Š¿’Ù3¡1
+#internal/ui/operations/operation.go
+·Š¿’Ù3Ë?
+1internal/ui/operations/rebase/rebase_operation.go
+·Š¿’Ù3Ü@?
+1internal/ui/operations/revert/revert_operation.go
+·Š¿’Ù30I
+;internal/ui/operations/set_parents/set_parents_operation.go
+·Š¿’Ù3„ ?
+1internal/ui/operations/squash/squash_operation.go
+·Š¿’Ù3»#C
+5internal/ui/operations/target_picker/target_picker.go
+·Š¿’Ù3µC0
+"internal/ui/oplog/operation_log.go
+¸Š¿’Ù3ò?5
+'internal/ui/oplog/operation_log_test.go
+¸Š¿’Ù3™/
+!internal/ui/oplog/oplog_parser.go
+¸Š¿’Ù3«4
+&internal/ui/oplog/oplog_parser_test.go
+¸Š¿’Ù3Ë&
+internal/ui/oplog/row.go
+¸Š¿’Ù3ö2
+$internal/ui/oplog/testdata/multi.log
+¸Š¿’Ù3²3
+%internal/ui/oplog/testdata/single.log
+¸Š¿’Ù3æ.
+ internal/ui/password/password.go
+¹Š¿’Ù3³,
+internal/ui/preview/preview.go
+¹Š¿’Ù3ˆ81
+#internal/ui/preview/preview_test.go
+¹Š¿’Ù3¡"&
+internal/ui/redo/redo.go
+¹Š¿’Ù3ª+
+internal/ui/redo/redo_test.go
+¹Š¿’Ù3Ï3
+%internal/ui/render/display_context.go
+¹Š¿’Ù3Õ)8
+*internal/ui/render/display_context_test.go
+ºŠ¿’Ù3±0(
+internal/ui/render/draw.go
+ºŠ¿’Ù3©*
+internal/ui/render/effect.go
+ºŠ¿’Ù3µ!/
+!internal/ui/render/interaction.go
+ºŠ¿’Ù3ò(
+internal/ui/render/list.go
+ºŠ¿’Ù3¬6-
+internal/ui/render/list_test.go
+ºŠ¿’Ù3ä(
+internal/ui/render/tabs.go
+ºŠ¿’Ù3Û-
+internal/ui/render/tabs_test.go
+»Š¿’Ù3ˆ0
+"internal/ui/render/text_builder.go
+»Š¿’Ù3ã5
+'internal/ui/render/text_builder_test.go
+»Š¿’Ù3æ+)
+internal/ui/render/width.go
+»Š¿’Ù3.
+ internal/ui/render/width_test.go
+»Š¿’Ù3*
+internal/ui/render/zindex.go
+»Š¿’Ù3»	<
+.internal/ui/revisions/dispatch_actions_test.go
+»Š¿’Ù3ê6?
+0internal/ui/revisions/displaycontext_renderer.go¼Š¿’Ù3û™C
+5internal/ui/revisions/displaycontext_renderer_test.go
+¼Š¿’Ù3¦!1
+"internal/ui/revisions/revisions.go¼Š¿’Ù3±ûA
+3internal/ui/revisions/revisions_quicksearch_test.go
+¼Š¿’Ù3ë5
+'internal/ui/revisions/revisions_test.go
+½Š¿’Ù3û)C
+5internal/ui/revisions/testdata/jj-log-with-elided.log
+½Š¿’Ù3å@
+2internal/ui/revisions/testdata/single-line-log.log
+½Š¿’Ù3Õ7
+)internal/ui/revset/completion_provider.go
+½Š¿’Ù3Â)<
+.internal/ui/revset/completion_provider_test.go
+¾Š¿’Ù3Å*
+internal/ui/revset/revset.go
+¾Š¿’Ù3ÿb/
+!internal/ui/revset/revset_test.go
+¾Š¿’Ù3¼%"
+internal/ui/split.go
+¾Š¿’Ù3†**
+internal/ui/status/status.go
+¿Š¿’Ù3ä|/
+!internal/ui/status/status_test.go
+¿Š¿’Ù3ì 
+internal/ui/ui.go¿Š¿’Ù3À«%
+internal/ui/ui_test.go¿Š¿’Ù3íÙ&
+internal/ui/undo/undo.go
+ÀŠ¿’Ù3ª+
+internal/ui/undo/undo_test.go
+ÀŠ¿’Ù3Æ-
+internal/ui/workspace/parser.go
+ÀŠ¿’Ù3ë
+*
+internal/ui/workspace/row.go
+ÁŠ¿’Ù3£0
+"internal/ui/workspace/workspace.go
+ÁŠ¿’Ù3Œ@
+nix/default.nix
+ÁŠ¿’Ù3• 
+nix/dev/flake.lock
+ÁŠ¿’Ù3
+nix/dev/flake.nix
+ÂŠ¿’Ù3„
+nix/jjui.nix
+ÂŠ¿’Ù3Ò
+nix/overlays.nix
+ÂŠ¿’Ù3
+nix/package.nix
+ÂŠ¿’Ù3á 
+nix/partitions.nix
+ÂŠ¿’Ù3×
+nix/shells.nix
+ÂŠ¿’Ù3”
+nix/utils.nix
+ÃŠ¿’Ù3Ğ
+nix/vendor-hash	ÃŠ¿’Ù34
+run.shÃŠ¿’Ù3‡
+	shell.nix
+ÃŠ¿’Ù3‚!
+test/log_builder.go
+ÄŠ¿’Ù3ö%
+test/log_parser_test.go
+ÄŠ¿’Ù3¢2
+test/render.go
+ÄŠ¿’Ù3
+test/simulate.go
+ÄŠ¿’Ù3•
+test/strings.go
+ÄŠ¿’Ù3 )
+test/test_command_runner.go
+ÅŠ¿’Ù3ï8
+*test/testdata/change-commit-same-color.log
+ÅŠ¿’Ù3‹:
+,test/testdata/change-id-like-description.log
+ÅŠ¿’Ù3§)
+test/testdata/commit-id.log
+ÅŠ¿’Ù3“4
+&test/testdata/conflicted-change-id.log
+ÅŠ¿’Ù3»3
+%test/testdata/divergent-change-id.log
+ÆŠ¿’Ù3ê9
++test/testdata/divergent-short-change-id.log
+ÆŠ¿’Ù3¯)
+test/testdata/divergent.log
+ÆŠ¿’Ù3¡&
+test/testdata/evolog.log
+ÆŠ¿’Ù3„-
+test/testdata/long-bookmark.log
+ÇŠ¿’Ù3Ç	'
+test/testdata/my-test.log
+ÇŠ¿’Ù3™,
+test/testdata/no-commit-id.log
+ÇŠ¿’Ù3‚&
+test/testdata/output.log
+ÇŠ¿’Ù3è(
+test/testdata/short-id.log
+ÇŠ¿’Ù3Ä;
+.test/testdata/single-line-with-description.log	ÈŠ¿’Ù3j3
+%test/testdata/working-copy-commit.log
+ÈŠ¿’Ù3™6
+(test/testdata/working-copy-on-branch.log
+ÈŠ¿’Ù3¶
+ *ËO[ğ¥uFÉÙ(ÅıáõÁQ•›0

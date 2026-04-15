@@ -7,7 +7,7 @@ import (
 	"github.com/idursun/jjui/internal/screen"
 )
 
-func parseRows(reader io.Reader, roots map[string]string) []row {
+func parseRows(reader io.Reader, roots map[string]string, currentRoot string) []row {
 	var rows []row
 	rawSegments := screen.ParseFromReader(reader)
 
@@ -16,9 +16,10 @@ func parseRows(reader io.Reader, roots map[string]string) []row {
 		name := extractWorkspaceName(segmentedLine)
 		root := roots[name]
 		rows = append(rows, row{
-			Name:  name,
-			Root:  root,
-			Lines: []*rowLine{&rl},
+			Name:    name,
+			Root:    root,
+			Current: root != "" && root == currentRoot,
+			Lines:   []*rowLine{&rl},
 		})
 	}
 	return rows

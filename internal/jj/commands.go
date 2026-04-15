@@ -463,6 +463,10 @@ func WorkspaceListRoots() CommandArgs {
 	return []string{"workspace", "list", "--color", "never", "-T", `name ++ "\t" ++ root ++ "\n"`}
 }
 
+func WorkspaceCurrent() CommandArgs {
+	return []string{"workspace", "root", "--color", "never"}
+}
+
 func WorkspaceAdd(destination string, name string) CommandArgs {
 	args := []string{"workspace", "add"}
 	if name != "" {

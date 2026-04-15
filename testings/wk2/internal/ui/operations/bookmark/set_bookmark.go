@@ -1,0 +1,181 @@
+package bookmark
+
+import (
+	"strings"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/idursun/jjui/internal/jj"
+	"github.com/idursun/jjui/internal/ui/actions"
+	"github.com/idursun/jjui/internal/ui/common"
+	"github.com/idursun/jjui/internal/ui/context"
+	"github.com/idursun/jjui/internal/ui/dispatch"
+	"github.com/idursun/jjui/internal/ui/intents"
+	"github.com/idursun/jjui/internal/ui/layout"
+	"github.com/idursun/jjui/internal/ui/operations"
+	"github.com/idursun/jjui/internal/ui/render"
+)
+
+var _ operations.Operation = (*SetBookmarkOperation)(nil)
+var _ common.Editable = (*SetBookmarkOperation)(nil)
+var _ dispatch.ScopeProvider = (*SetBookmarkOperation)(nil)
+
+type SetBookmarkOperation struct {
+	context         *context.MainContext
+	revision        string
+	name            textinput.Model
+	suggestions     []string
+	suggestionIndex int
+}
+
+func (s *SetBookmarkOperation) IsEditing() bool {
+	return true
+}
+
+func (s *SetBookmarkOperation) Scopes() []dispatch.Scope {
+	return []dispatch.Scope{
+		{
+			Name:    actions.ScopeSetBookmark,
+			Leak:    dispatch.LeakNone,
+			Handler: s,
+		},
+	}
+}
+
+func (s *SetBookmarkOperation) HandleIntent(intent intents.Intent) (tea.Cmd, bool) {
+	switch intent := intent.(type) {
+	case intents.Cancel:
+		return common.Close, true
+	case intents.Apply:
+		return s.context.RunCommand(jj.BookmarkSet(s.revision, s.name.Value()), common.CloseApplied, common.Refresh), true
+	case intents.AutocompleteCycle:
+		s.cycleSuggestion(intent.Reverse)
+		return nil, true
+	}
+	return nil, false
+}
+
+func (s *SetBookmarkOperation) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case intents.Intent:
+		cmd, _ := s.HandleIntent(msg)
+		return cmd
+	}
+	var cmd tea.Cmd
+	s.name, cmd = s.name.Update(msg)
+	s.name.SetValue(strings.ReplaceAll(s.name.Value(), " ", "-"))
+	s.suggestionIndex = -1
+	return cmd
+}
+
+func (s *SetBookmarkOperation) Init() tea.Cmd {
+	if output, err := s.context.RunCommandImmediate(jj.BookmarkListMovable(s.revision)); err == nil {
+		bookmarks := jj.ParseBookmarkListOutput(string(output))
+		var suggestions []string
+		for _, b := range bookmarks {
+			if b.Name != "" && !b.Backwards {
+				suggestions = append(suggestions, b.Name)
+			}
+		}
+		s.suggestions = suggestions
+		s.name.SetSuggestions(suggestions)
+	}
+
+	return textinput.Blink
+}
+
+func (s *SetBookmarkOperation) ViewRect(dl *render.DisplayContext, box layout.Box) {
+	content := s.viewContent()
+	w, h := lipgloss.Size(content)
+	rect := layout.Rect(box.R.Min.X, box.R.Min.Y, w, h)
+	dl.AddDraw(rect, content, 0)
+}
+
+func (s *SetBookmarkOperation) IsFocused() bool {
+	return true
+}
+
+func (s *SetBookmarkOperation) Render(commit *jj.Commit, pos operations.RenderPosition) string {
+	if pos != operations.RenderBeforeCommitId || commit.GetChangeId() != s.revision {
+		return ""
+	}
+	return s.viewContent() + s.name.Styles().Focused.Text.Render(" ")
+}
+
+func (s *SetBookmarkOperation) Name() string {
+	return "set bookmark"
+}
+
+func NewSetBookmarkOperation(context *context.MainContext, changeId string) *SetBookmarkOperation {
+	dimmedStyle := common.DefaultPalette.Get("revisions dimmed").Inline(true)
+	textStyle := common.DefaultPalette.Get("revisions text").Inline(true)
+	t := textinput.New()
+	t.ShowSuggestions = true
+	t.CharLimit = 120
+	t.Prompt = ""
+	s := textinput.DefaultDarkStyles()
+	s.Focused.Text = textStyle
+	s.Focused.Prompt = textStyle
+	s.Focused.Suggestion = dimmedStyle
+	s.Focused.Placeholder = dimmedStyle
+	s.Blurred.Text = textStyle
+	s.Blurred.Prompt = textStyle
+	s.Blurred.Suggestion = dimmedStyle
+	s.Blurred.Placeholder = dimmedStyle
+	t.SetStyles(s)
+	t.SetValue("")
+	t.Focus()
+
+	op := &SetBookmarkOperation{
+		name:     t,
+		revision: changeId,
+		context:  context,
+		// -1 means no active completion cycle.
+		suggestionIndex: -1,
+	}
+	return op
+}
+
+func (s *SetBookmarkOperation) viewContent() string {
+	return s.name.View()
+}
+
+func (s *SetBookmarkOperation) cycleSuggestion(reverse bool) {
+	candidates := s.matchingSuggestions(s.name.Value())
+	if len(candidates) == 0 {
+		return
+	}
+	delta := 1
+	if reverse {
+		delta = -1
+	}
+	if s.suggestionIndex < 0 {
+		if reverse {
+			s.suggestionIndex = len(candidates) - 1
+		} else {
+			s.suggestionIndex = 0
+		}
+	} else {
+		s.suggestionIndex = (s.suggestionIndex + delta + len(candidates)) % len(candidates)
+	}
+	s.name.SetValue(candidates[s.suggestionIndex])
+	s.name.CursorEnd()
+}
+
+func (s *SetBookmarkOperation) matchingSuggestions(input string) []string {
+	if len(s.suggestions) == 0 {
+		return nil
+	}
+	needle := strings.TrimSpace(input)
+	if needle == "" {
+		return s.suggestions
+	}
+	matches := make([]string, 0, len(s.suggestions))
+	for _, suggestion := range s.suggestions {
+		if strings.HasPrefix(suggestion, needle) {
+			matches = append(matches, suggestion)
+		}
+	}
+	return matches
+}
