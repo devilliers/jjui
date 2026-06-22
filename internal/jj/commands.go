@@ -283,7 +283,7 @@ func GitFetch(flags ...string) CommandArgs {
 }
 
 func GitPush(flags ...string) CommandArgs {
-	args := []string{"git", "push"}
+	args := []string{"push"}
 	if flags != nil {
 		args = append(args, flags...)
 	}
