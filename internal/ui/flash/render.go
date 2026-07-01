@@ -54,11 +54,19 @@ func (r CardRenderer) renderCard(command, text string, commandErr error, maxWidt
 		}
 		if bodyText != "" {
 			bodyText = render.ReplayTerminalOutput(bodyText)
-			bodyStyle := lipgloss.NewStyle()
-			if highlight {
-				bodyStyle = statusStyle
+			if strings.Contains(bodyText, "\x1b[") {
+				// The body carries its own ANSI colour (e.g. jj --color always,
+				// or pre-commit output). Preserve it rather than repainting the
+				// whole block in a single foreground; the border and status mark
+				// still convey success/error.
+				parts = append(parts, bodyText)
+			} else {
+				bodyStyle := lipgloss.NewStyle()
+				if highlight {
+					bodyStyle = statusStyle
+				}
+				parts = append(parts, bodyStyle.Render(bodyText))
 			}
-			parts = append(parts, bodyStyle.Render(bodyText))
 		}
 	}
 

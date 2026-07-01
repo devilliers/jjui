@@ -115,6 +115,16 @@ func (a *MainCommandRunner) runCommandWithInput(args []string, input *string, co
 			c := exec.Command(jjBin, args...)
 			c.Dir = a.Location
 			c.Env = append(os.Environ(), env...)
+			// jjui already forces `--color always` for jj itself (above), but its
+			// stdout is a pipe here, not a TTY, so tools spawned by hooks (e.g.
+			// pre-commit/prek via a `push` -> jj-pre-push alias) auto-disable
+			// colour. Hint the common ones to emit ANSI anyway; the flash card
+			// renders embedded escapes. Harmless for tools that ignore these.
+			c.Env = append(c.Env,
+				"PRE_COMMIT_COLOR=always",
+				"CLICOLOR_FORCE=1",
+				"FORCE_COLOR=1",
+			)
 
 			if input != nil {
 				stdin, err := c.StdinPipe()
