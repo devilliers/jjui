@@ -130,7 +130,14 @@ func (a *MainCommandRunner) runCommandWithInput(args []string, input *string, co
 				}()
 			}
 
+			// Capture stdout and stderr into a single buffer. Some commands
+			// (e.g. the `push` alias that runs jj-pre-push -> prek/pre-commit)
+			// emit their meaningful failure detail on stdout while only the
+			// summary lines go to stderr. Sharing one writer preserves ordering
+			// and is race-free: os/exec serializes writes when Stdout and Stderr
+			// are the same writer.
 			var output bytes.Buffer
+			c.Stdout = &output
 			c.Stderr = &output
 			if err := c.Start(); err != nil {
 				return common.CommandCompletedMsg{
